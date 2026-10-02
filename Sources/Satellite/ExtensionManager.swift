@@ -12,6 +12,8 @@ struct ExtensionInfo: Identifiable {
     var origin: ExtensionOrigin?
     /// For libraries: enabled extensions that currently load this library.
     var usedBy: [String] = []
+    /// Found in one of the user's development folders rather than Satellite's own extensions folder.
+    var inDevelopmentFolder = false
 
     var displayName: String { manifest?.name ?? id }
     var version: SemVer? { manifest.map(\.semver) }
@@ -70,6 +72,19 @@ enum MatchPattern {
         let special = Set("\\^$.|?*+()[]{}/")
         return text.map { special.contains($0) ? "\\\($0)" : String($0) }.joined()
     }
+
+    /// Whether `url` is covered by `patterns` and not by `excludes`, the same way the injected script decides.
+    static func matches(_ url: URL, patterns: [String], excludes: [String] = []) -> Bool {
+        guard let scheme = url.scheme, let host = url.host else { return false }
+        let subject = scheme + "://" + host + url.path + (url.query.map { "?" + $0 } ?? "")
+        func hit(_ list: [String]) -> Bool {
+            list.contains { pattern in
+                guard let source = try? regexSource(pattern), let regex = try? NSRegularExpression(pattern: source) else { return false }
+                return regex.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil
+            }
+        }
+        return hit(patterns) && !hit(excludes)
+    }
 }
 
 // MARK: - Manager
@@ -81,6 +96,8 @@ final class ExtensionManager: ObservableObject {
     let userContentController = WKUserContentController()
 
     @Published private(set) var extensions: [ExtensionInfo] = []
+    /// Notices about extensions that were skipped, such as the same id in two folders.
+    @Published private(set) var conflicts: [String] = []
 
     private var installedWorlds: [WKContentWorld] = []
     private var backgrounds: [String: BackgroundHost] = [:]
@@ -114,21 +131,40 @@ final class ExtensionManager: ObservableObject {
         for view in views { view.evaluateJavaScript(script, in: nil, in: world) { _ in } }
     }
 
+    /// Satellite's own folder (where the store installs to).
     var directory: URL { AppPaths.extensions }
+
+    /// Every folder extensions are loaded from: Satellite's own, then the user's development folders.
+    var directories: [URL] { [AppPaths.extensions] + DevelopmentFolders.urls }
 
     func info(_ id: String) -> ExtensionInfo? { extensions.first { $0.id == id } }
 
     func reload() {
         let fm = FileManager.default
-        let entries = (try? fm.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
-
-        var scanned = entries
-            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            .map { Self.scan($0, enabled: Self.storedEnabled($0.lastPathComponent)) }
+        var scanned: [ExtensionInfo] = []
+        var seen: [String: URL] = [:]
+        var notices: [String] = []
+        for root in directories {
+            let entries = (try? fm.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
+            let found = entries
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+                .filter { fm.fileExists(atPath: $0.appendingPathComponent("manifest.json").path) || root == directory }
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            for folder in found {
+                var info = Self.scan(folder, enabled: Self.storedEnabled(folder.lastPathComponent))
+                info.inDevelopmentFolder = root != directory
+                if let first = seen[info.id] {
+                    notices.append("\u{201C}\(info.id)\u{201D} exists in two folders. Using \(first.deletingLastPathComponent().path); ignoring \(folder.deletingLastPathComponent().path).")
+                    continue
+                }
+                seen[info.id] = folder
+                scanned.append(info)
+            }
+        }
 
         libraryOrder = Self.resolveDependencies(&scanned)
+        conflicts = notices
         extensions = scanned
         install()
     }
@@ -156,14 +192,6 @@ final class ExtensionManager: ObservableObject {
             ExtensionStorage.shared.deleteAll(id)
             ExtensionSettings.shared.deleteAll(id)
         }
-        reload()
-    }
-
-    func installSampleExtension() {
-        let dir = directory.appendingPathComponent("sample-hello", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? Self.sampleManifest.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
-        try? Self.sampleScript.write(to: dir.appendingPathComponent("content.js"), atomically: true, encoding: .utf8)
         reload()
     }
 
@@ -196,7 +224,7 @@ final class ExtensionManager: ObservableObject {
     /// Fills in `usedBy`, flags extensions whose dependencies are missing/incompatible/circular,
     /// and returns each healthy extension's library load order.
     private static func resolveDependencies(_ list: inout [ExtensionInfo]) -> [String: [String]] {
-        let byID = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+        let byID = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         func collect(_ id: String, path: [String]) throws -> [String] {
             guard let manifest = byID[id]?.manifest else { return [] }
@@ -357,7 +385,23 @@ final class ExtensionManager: ObservableObject {
         }
 
         let bridge = isolated ? """
-        const __listeners = { settings: [] };
+        const __send = (level, text) => {
+            try { window.webkit.messageHandlers.satellite.postMessage({ method: 'log', params: { level, message: text, source: location.hostname || 'background' } }).catch(() => {}); } catch (e) {}
+          };
+          let __sent = 0;
+          const __format = (value) => {
+            if (typeof value === 'string') return value;
+            if (value instanceof Error) return value.name + ': ' + value.message + (value.stack ? '\\n' + value.stack : '');
+            try { return JSON.stringify(value); } catch (e) { return String(value); }
+          };
+          for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+            const original = console[level] ? console[level].bind(console) : () => {};
+            console[level] = (...args) => { original(...args); if (++__sent <= 1000) __send(level, args.map(__format).join(' ')); };
+          }
+          window.addEventListener('error', (event) => {
+            if (String(event.filename).indexOf('\(id).js') >= 0) __send('error', (event.error && event.error.stack) || event.message);
+          });
+          const __listeners = { settings: [] };
           window.__satelliteEmit = (type, args) => {
             for (const callback of (__listeners[type] || [])) {
               try { callback(...args); } catch (error) { console.error('[satellite:' + \(json(id)) + ']', error); }
@@ -432,41 +476,6 @@ final class ExtensionManager: ObservableObject {
         //# sourceURL=satellite-\(mode == .page ? "extension" : "background")-\(id).js
         """
     }
-
-    // MARK: Sample
-
-    private static let sampleManifest = """
-    {
-      "name": "Hello Badge (local sample)",
-      "version": "1.0.0",
-      "author": "Satellite",
-      "description": "Shows a small badge on Salesforce pages and counts visits.",
-      "icon": "symbol:hand.wave.fill",
-      "matches": ["*://*.force.com/*", "*://*.salesforce.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle",
-      "world": "isolated",
-      "permissions": ["storage"]
-    }
-
-    """
-
-    private static let sampleScript = """
-    // Runs in an isolated world: full DOM access, plus the `satellite` API.
-    // (Use "world": "main" in the manifest to reach page JavaScript instead; no `satellite` API there.)
-    if (window.top === window) {
-      const visits = ((await satellite.storage.get('visits')) || 0) + 1;
-      await satellite.storage.set('visits', visits);
-
-      const badge = document.createElement('div');
-      badge.textContent = 'Satellite extension active \\u00B7 visit ' + visits;
-      badge.style.cssText =
-        'position:fixed;bottom:8px;left:8px;z-index:2147483647;padding:4px 8px;' +
-        'background:#0b5cab;color:#fff;font:12px -apple-system,sans-serif;border-radius:6px;opacity:.85';
-      document.body.appendChild(badge);
-    }
-
-    """
 }
 
 // MARK: - Bridge and storage
@@ -534,6 +543,12 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "notify":
             guard allowed(.notifications) else { return }
             Self.notify(title: params["title"] as? String ?? "", body: params["body"] as? String ?? "")
+            replyHandler(nil, nil)
+
+        case "log":
+            ExtensionLog.shared.record(
+                extensionID, level: params["level"] as? String ?? "log",
+                message: params["message"] as? String ?? "", source: params["source"] as? String ?? "")
             replyHandler(nil, nil)
 
         case "ui.list", "ui.add", "ui.update", "ui.remove", "ui.select":

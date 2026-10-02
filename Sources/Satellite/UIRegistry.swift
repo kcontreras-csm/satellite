@@ -16,8 +16,11 @@ struct SidebarItem: Equatable, Identifiable {
     var hidden = false
     /// The extension that added this item; nil for items from config.json.
     var owner: String?
+    /// Links that ask for a new window open as tabs inside this app (see `WebApp.tabs`).
+    var opensLinksInTabs = false
 
     init(_ app: WebApp) {
+        opensLinksInTabs = app.tabs ?? false
         id = app.id
         name = app.name
         url = app.url

@@ -1,53 +1,116 @@
 import AppKit
 import WebKit
 
-/// Center area: one lazily loaded web view per app, only the selected one visible.
+/// Center area: one lazily loaded group of tabs per app, only the selected app's current tab visible.
 final class ContentViewController: NSViewController {
-    private var panes: [String: WebPane] = [:]
+    private var groups: [String: TabGroup] = [:]
     private(set) var selectedID: String?
+    private let tabBar = TabBarView()
+    private let container = NSView()
+    private var tabBarHeight: NSLayoutConstraint?
+    private var titleObserver: NSObjectProtocol?
 
-    var selectedPane: WebPane? { selectedID.flatMap { panes[$0] } }
+    var selectedGroup: TabGroup? { selectedID.flatMap { groups[$0] } }
+    /// The page in front: the selected app's current tab.
+    var selectedPane: WebPane? { selectedGroup?.current }
+    var hasClosableTab: Bool { selectedGroup?.hasClosableTab ?? false }
 
-    override func loadView() {
-        view = NSView()
+    deinit {
+        if let titleObserver { NotificationCenter.default.removeObserver(titleObserver) }
     }
 
-    /// Follows the sidebar: creates panes for new items, drops panes of removed ones, and applies renames
+    override func loadView() {
+        let root = NSView()
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        tabBar.isHidden = true
+        container.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(container)
+        root.addSubview(tabBar)
+
+        let height = tabBar.heightAnchor.constraint(equalToConstant: 0)
+        tabBarHeight = height
+        NSLayoutConstraint.activate([
+            tabBar.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            height,
+            container.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            container.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+
+        tabBar.onSelect = { [weak self] in self?.selectedGroup?.select($0) }
+        tabBar.onClose = { [weak self] in self?.selectedGroup?.close(at: $0) }
+        titleObserver = NotificationCenter.default.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let group = self?.selectedGroup, group.tabs.count > 1 else { return }
+                self?.tabBar.updateTitles(group.tabs.map(\.tabTitle))
+            }
+        }
+        view = root
+    }
+
+    /// Follows the sidebar: creates tab groups for new items, drops groups of removed ones, and applies renames
     /// and address changes. If the selected item disappeared nothing is selected until `select` is called.
     func setItems(_ items: [SidebarItem]) {
         let ids = Set(items.map(\.id))
-        for id in panes.keys where !ids.contains(id) {
-            panes.removeValue(forKey: id)?.teardown()
+        for id in groups.keys where !ids.contains(id) {
+            groups.removeValue(forKey: id)?.teardown()
         }
         for item in items {
-            if let pane = panes[item.id] {
-                pane.update(name: item.name, url: item.url)
+            if let group = groups[item.id] {
+                group.home.update(name: item.name, url: item.url)
+                group.opensAllLinksInTabs = item.opensLinksInTabs
             } else {
-                panes[item.id] = WebPane(name: item.name, url: item.url)
+                let group = TabGroup(name: item.name, url: item.url, opensAllLinksInTabs: item.opensLinksInTabs)
+                group.onChange = { [weak self, weak group] in
+                    guard let self, let group, self.selectedGroup === group else { return }
+                    self.show(group)
+                }
+                groups[item.id] = group
             }
         }
         if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
     }
 
     func select(_ id: String) {
-        guard let pane = panes[id] else { return }
+        guard let group = groups[id] else { return }
         selectedID = id
-        if pane.webView.superview == nil {
-            view.addSubview(pane.webView)
-            NSLayoutConstraint.activate([
-                pane.webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-                pane.webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                pane.webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                pane.webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-        }
-        for (otherID, other) in panes where other.didCreateView { other.webView.isHidden = (otherID != id) }
-        pane.loadIfNeeded()
-        view.window?.makeFirstResponder(pane.webView)
+        show(group)
     }
 
+    func nextTab() { selectedGroup?.selectNext() }
+    func previousTab() { selectedGroup?.selectPrevious() }
+    @discardableResult func closeCurrentTab() -> Bool { selectedGroup?.closeCurrent() ?? false }
+
     func reloadAll() {
-        panes.values.forEach { $0.reloadIfLoaded() }
+        groups.values.forEach { $0.reloadAll() }
+    }
+
+    /// Makes the group's current tab the only visible web view and shows the tab bar when there are several.
+    private func show(_ group: TabGroup) {
+        let current = group.current
+        for other in groups.values {
+            for tab in other.tabs where tab.didCreateView && tab !== current { tab.webView.isHidden = true }
+        }
+        if current.webView.superview == nil {
+            container.addSubview(current.webView)
+            NSLayoutConstraint.activate([
+                current.webView.topAnchor.constraint(equalTo: container.topAnchor),
+                current.webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                current.webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                current.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+        }
+        current.webView.isHidden = false
+        current.loadIfNeeded()
+
+        let several = group.tabs.count > 1
+        tabBar.isHidden = !several
+        tabBarHeight?.constant = several ? 34 : 0
+        if several { tabBar.show(titles: group.tabs.map(\.tabTitle), selected: group.selectedIndex) }
+        view.window?.makeFirstResponder(current.webView)
     }
 }
 

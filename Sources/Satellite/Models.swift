@@ -30,6 +30,9 @@ struct WebApp: Codable, Hashable {
     var name: String
     var url: URL
     var symbol: String
+    /// When true, every link that asks for a new window opens as a tab inside this app, even links to other
+    /// sites. Meant for launchers such as Okta, where each tile opens a different application.
+    var tabs: Bool?
 }
 
 /// Where the extension store reads from. Optional in config.json; defaults to the official repository.
@@ -54,6 +57,7 @@ struct AppConfig: Codable {
         apps: [
             WebApp(id: "orgcs", name: "OrgCS", url: URL(string: "https://orgcs.lightning.force.com/one/one.app")!, symbol: "cloud.fill"),
             WebApp(id: "bt1", name: "BT1", url: URL(string: "https://bt1.my.salesforce.com/")!, symbol: "bolt.fill"),
+            WebApp(id: "okta", name: "Okta", url: URL(string: "https://salesforce.okta.com/")!, symbol: "person.badge.key.fill", tabs: true),
             // TODO: point this at the real knowledge base once decided (edit config.json).
             // WebApp(id: "knowledge", name: "KB", url: URL(string: "https://help.salesforce.com/")!, symbol: "book.fill"),
         ],

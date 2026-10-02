@@ -65,6 +65,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             center.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
                 self?.applyItems()
             },
+            center.addObserver(forName: .extensionsHotReloaded, object: nil, queue: .main) { [weak self] note in
+                guard let text = note.userInfo?["message"] as? String else { return }
+                let prefix = note.userInfo?["isError"] as? Bool == true ? "\u{26A0}\u{FE0F} " : ""
+                MainActor.assumeIsolated { Toast.show(prefix + text, in: self?.window, duration: 4) }
+            },
             center.addObserver(forName: UIRegistry.selectRequested, object: nil, queue: .main) { [weak self] note in
                 guard let raw = note.userInfo?["section"] as? String, let section = SidebarSection(rawValue: raw),
                       let id = note.userInfo?["id"] as? String else { return }
@@ -127,6 +132,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     @objc func goForward(_ sender: Any?) { activePane?.webView.goForward() }
     @objc func reloadPage(_ sender: Any?) { activePane?.webView.reload() }
     @objc func hardReloadPage(_ sender: Any?) { activePane?.webView.reloadFromOrigin() }
+
+    /// The address of the page in front (for prefilling match patterns).
+    var currentPageURL: URL? { activePane?.webView.url }
+
+    // MARK: Tabs
+
+    var hasClosableTab: Bool { contentVC.hasClosableTab }
+    func showNextTab() { contentVC.nextTab() }
+    func showPreviousTab() { contentVC.previousTab() }
+    /// Closes the current tab if it is not the app's own. Returns whether it did.
+    func closeCurrentTab() -> Bool { contentVC.closeCurrentTab() }
 
     // MARK: Page snapshots
 

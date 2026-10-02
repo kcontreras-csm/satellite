@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = MainWindowController(openSettings: { [weak self] in self?.openSettings() })
         mainController = controller
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
+        SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
 
         buildMenu()
         menuObserver = NotificationCenter.default.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
@@ -22,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         UpdateChecker.shared.startPeriodicChecks()
         FIDODeviceMonitor.shared.start()
+        ExtensionWatcher.shared.start()
     }
 
     // The window closes but sessions stay alive; the Dock icon reopens it.
@@ -42,6 +44,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func hardReloadPage() { mainController?.hardReloadPage(nil) }
     @objc private func toggleAssistants() { mainController?.toggleAssistants(nil) }
     @objc private func copySnapshot() { mainController?.copySnapshot(nil) }
+    @objc private func showNextTab() { mainController?.showNextTab() }
+    @objc private func showPreviousTab() { mainController?.showPreviousTab() }
+    /// Closes the current tab if there is one to close, otherwise the window in front.
+    @objc private func closeTabOrWindow() {
+        if NSApp.keyWindow === mainController?.window, mainController?.closeCurrentTab() == true { return }
+        NSApp.keyWindow?.performClose(nil)
+    }
+
+    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(closeTabOrWindow) {
+            menuItem.title = NSApp.keyWindow === mainController?.window && mainController?.hasClosableTab == true ? "Close Tab" : "Close"
+        }
+        return true
+    }
     @objc private func saveSnapshot() { mainController?.saveSnapshot(nil) }
     @objc private func selectApp(_ sender: NSMenuItem) { mainController?.selectApp(sender.representedObject as? String) }
     @objc private func showAssistant(_ sender: NSMenuItem) {
@@ -117,6 +133,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewMenu.addItem(item(app.name, #selector(selectApp(_:)), "\(index + 1)", target: self, represented: app.id))
         }
         viewMenu.addItem(.separator())
+        viewMenu.addItem(item("Show Next Tab", #selector(showNextTab), "]", [.command, .shift], target: self))
+        viewMenu.addItem(item("Show Previous Tab", #selector(showPreviousTab), "[", [.command, .shift], target: self))
+        viewMenu.addItem(.separator())
         viewMenu.addItem(item("Toggle Assistants", #selector(toggleAssistants), "0", [.command, .option], target: self))
         for (index, assistant) in UIRegistry.shared.items(.assistants).prefix(9).enumerated() {
             viewMenu.addItem(item(assistant.name, #selector(showAssistant(_:)), "\(index + 1)", [.command, .option], target: self, represented: assistant.id))
@@ -132,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu(title: "Window")
         menu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
         menu.addItem(item("Zoom", #selector(NSWindow.performZoom(_:))))
-        menu.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
+        menu.addItem(item("Close", #selector(closeTabOrWindow), "w", target: self))
         menu.addItem(.separator())
         menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))))
         return menu

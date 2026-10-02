@@ -11,6 +11,14 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
     private(set) var name: String
     private(set) var homeURL: URL?
     var onClose: (() -> Void)?
+    /// The tab group this pane belongs to, for panes of the apps rail.
+    weak var tabHost: TabGroup?
+
+    /// What the tab bar shows: the page title, else the name we gave it.
+    var tabTitle: String {
+        guard didCreateView, let title = webView.title, !title.isEmpty else { return name }
+        return title
+    }
 
     private let providedConfiguration: WKWebViewConfiguration?
     private var didStartLoading = false
@@ -40,6 +48,7 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
             view.observe(\.canGoBack, changeHandler: { v, c in notify(v, c) }),
             view.observe(\.canGoForward, changeHandler: { v, c in notify(v, c) }),
             view.observe(\.isLoading, changeHandler: { v, c in notify(v, c) }),
+            view.observe(\.title, changeHandler: { v, c in notify(v, c) }),
         ]
         return view
     }()
@@ -100,6 +109,7 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         // Cross-site links that ask for a new window go to the default browser.
         if navigationAction.targetFrame == nil,
            navigationAction.navigationType == .linkActivated,
+           tabHost?.opensAllLinksInTabs != true,
            !WebEnvironment.isInternal(url, from: webView.url) {
             NSWorkspace.shared.open(url)
             return decisionHandler(.cancel)
@@ -182,6 +192,12 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // Inside an app of the rail, a plain new window becomes a tab. Pages that ask for a specific size
+        // (sign-in pop-ups and the like) keep their own small window.
+        let asksForPopup = windowFeatures.width != nil || windowFeatures.height != nil
+        if let tabHost, !asksForPopup {
+            return tabHost.openTab(configuration: configuration).webView
+        }
         let popup = PopupWindowController(configuration: configuration, features: windowFeatures)
         popup.show()
         return popup.pane.webView
