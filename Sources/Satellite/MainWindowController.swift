@@ -1,10 +1,13 @@
 import AppKit
+import UniformTypeIdentifiers
+import WebKit
 
 extension NSToolbarItem.Identifier {
     static let back = NSToolbarItem.Identifier("satellite.back")
     static let forward = NSToolbarItem.Identifier("satellite.forward")
     static let reload = NSToolbarItem.Identifier("satellite.reload")
     static let toggleAssistants = NSToolbarItem.Identifier("satellite.toggleAssistants")
+    static let snapshot = NSToolbarItem.Identifier("satellite.snapshot")
 }
 
 final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation {
@@ -125,6 +128,62 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     @objc func reloadPage(_ sender: Any?) { activePane?.webView.reload() }
     @objc func hardReloadPage(_ sender: Any?) { activePane?.webView.reloadFromOrigin() }
 
+    // MARK: Page snapshots
+
+    @objc func copySnapshot(_ sender: Any?) {
+        takeSnapshot { [weak self] text, _ in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            Toast.show("Copied page for AI (\(Self.size(of: text)))", in: self?.window)
+        }
+    }
+
+    @objc func saveSnapshot(_ sender: Any?) {
+        takeSnapshot { [weak self] text, pane in
+            guard let self, let window = self.window else { return }
+            Toast.dismiss()
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+            panel.nameFieldStringValue = Self.fileName(for: pane.webView)
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { return }
+                do {
+                    try text.write(to: url, atomically: true, encoding: .utf8)
+                    Toast.show("Saved \(url.lastPathComponent) (\(Self.size(of: text)))", in: window)
+                } catch {
+                    NSAlert(error: error).beginSheetModal(for: window, completionHandler: nil)
+                }
+            }
+        }
+    }
+
+    private func takeSnapshot(deliver: @escaping (String, WebPane) -> Void) {
+        guard let pane = activePane, pane.didCreateView, pane.webView.url != nil else {
+            Toast.show("Open a page first", in: window)
+            return
+        }
+        Toast.show("Capturing page\u{2026}", in: window, duration: nil)
+        Task { @MainActor in
+            do {
+                deliver(try await PageSnapshot.capture(pane.webView), pane)
+            } catch {
+                Toast.dismiss()
+                if let window { NSAlert(error: error).beginSheetModal(for: window, completionHandler: nil) }
+            }
+        }
+    }
+
+    private static func size(of text: String) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file)
+    }
+
+    private static func fileName(for webView: WKWebView) -> String {
+        let parts = [webView.url?.host, webView.title].compactMap { $0 }.filter { !$0.isEmpty }
+        let base = (parts.isEmpty ? ["page"] : parts).joined(separator: " - ")
+        let safe = base.components(separatedBy: CharacterSet(charactersIn: "/\\:*?\"<>|")).joined(separator: "-")
+        return String(safe.prefix(80)) + " (snapshot).md"
+    }
+
     func reloadAllPages() {
         contentVC.reloadAll()
         assistantsVC.reloadAll()
@@ -143,7 +202,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.back, .forward, .reload, .flexibleSpace, .toggleAssistants]
+        [.back, .forward, .reload, .flexibleSpace, .snapshot, .toggleAssistants]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -163,6 +222,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             return item
         }
         switch identifier {
+        case .snapshot:
+            let item = NSMenuToolbarItem(itemIdentifier: identifier)
+            item.image = NSImage(systemSymbolName: "doc.text.magnifyingglass", accessibilityDescription: "Page for AI")
+            item.label = "Page for AI"
+            item.toolTip = "Copy this page for an AI (arrow for more)"
+            item.showsIndicator = true
+            item.target = self
+            item.action = #selector(copySnapshot(_:))
+            let menu = NSMenu()
+            for (title, action) in [("Copy Page for AI", #selector(copySnapshot(_:))), ("Save Page for AI\u{2026}", #selector(saveSnapshot(_:)))] {
+                let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                entry.target = self
+                menu.addItem(entry)
+            }
+            item.menu = menu
+            return item
         case .back: return make("chevron.left", "Back", #selector(goBack(_:)))
         case .forward: return make("chevron.right", "Forward", #selector(goForward(_:)))
         case .reload: return make("arrow.clockwise", "Reload", #selector(reloadPage(_:)))

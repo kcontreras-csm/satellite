@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func reloadPage() { mainController?.reloadPage(nil) }
     @objc private func hardReloadPage() { mainController?.hardReloadPage(nil) }
     @objc private func toggleAssistants() { mainController?.toggleAssistants(nil) }
+    @objc private func copySnapshot() { mainController?.copySnapshot(nil) }
+    @objc private func saveSnapshot() { mainController?.saveSnapshot(nil) }
     @objc private func selectApp(_ sender: NSMenuItem) { mainController?.selectApp(sender.representedObject as? String) }
     @objc private func showAssistant(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { mainController?.showAssistant(id) }
@@ -119,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (index, assistant) in UIRegistry.shared.items(.assistants).prefix(9).enumerated() {
             viewMenu.addItem(item(assistant.name, #selector(showAssistant(_:)), "\(index + 1)", [.command, .option], target: self, represented: assistant.id))
         }
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item("Copy Page for AI", #selector(copySnapshot), "c", [.command, .shift], target: self))
+        viewMenu.addItem(item("Save Page for AI\u{2026}", #selector(saveSnapshot), "s", [.command, .shift], target: self))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
     }

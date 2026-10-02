@@ -41,6 +41,8 @@ The installed app reads `https://github.com/kcontreras-csm/satellite/releases/la
 
 The [store repository](https://github.com/kcontreras-csm/satellite-extensions) lists extensions in an `extensions.json` that a GitHub Action regenerates from its folders. **Settings > Store** shows each one's author, permissions, pages and dependencies before you install it; dependencies install first, and installs are validated before they replace anything. See its `EXTENSIONS.md` for publishing and the full manifest reference. To try extensions from a local folder: `SATELLITE_STORE_DIR=../satellite-extensions swift run`.
 
+To write an extension with an AI, open the page you want to change and use **View > Copy Page for AI** (`Shift+Cmd+C`, or the toolbar button; **Save Page for AI...** writes a file). The snapshot holds the page's HTML including shadow DOM and every frame, a list of clickable elements with selectors, the page's custom JavaScript globals, and a short guide to Satellite's extension format, so you can paste it into an AI together with what you want built. Pages often contain customer data, so by default only interface labels are kept and tokens in links are hidden; change this under **Settings > General**, and check the result before you share it.
+
 An extension is a folder with a `manifest.json` (and its scripts), in `~/Library/Application Support/Satellite/Extensions/` or installed from the store:
 
     {

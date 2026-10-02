@@ -363,6 +363,8 @@ private struct GeneralSettings: View {
     @ObservedObject var certificates = RememberedCertificates.shared
     @AppStorage(UpdateDefaults.autoCheck) private var autoCheck = true
     @ObservedObject var securityKeys = FIDODeviceMonitor.shared
+    @AppStorage(SnapshotDefaults.textMode) private var snapshotText = SnapshotTextMode.labels.rawValue
+    @AppStorage(SnapshotDefaults.includeGuide) private var snapshotGuide = true
 
     private var versionText: String {
         let build = Bundle.main.infoDictionary?["SatelliteBuild"] as? String
@@ -392,6 +394,17 @@ private struct GeneralSettings: View {
                 Button("Clear\u{2026}", role: .destructive) { confirmClear = true }
             }
             Text("Removes cookies and site storage, which signs you out everywhere.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            Divider()
+
+            Picker("Page text in snapshots", selection: $snapshotText) {
+                Text("Interface labels only").tag(SnapshotTextMode.labels.rawValue)
+                Text("All text").tag(SnapshotTextMode.full.rawValue)
+                Text("No text, structure only").tag(SnapshotTextMode.none.rawValue)
+            }
+            Toggle("Include the extension-writing guide", isOn: $snapshotGuide)
+            Text("View > Copy Page for AI puts the current page (its HTML including shadow DOM and frames, clickable elements and selectors) on the clipboard. Pages often hold customer data, so by default only interface labels are kept and tokens in links are hidden. Check the result before sharing it.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()
