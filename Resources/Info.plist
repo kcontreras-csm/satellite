@@ -6,16 +6,20 @@
     <string>Satellite</string>
     <key>CFBundleDisplayName</key>
     <string>Satellite</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.kcontreras.satellite</string>
     <key>CFBundleExecutable</key>
     <string>Satellite</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- Version placeholders only: scripts/bundle.sh stamps the real version into the built bundle
+         (the release tag in CI, the latest tag locally). Never edit these by hand. -->
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.0.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>0.0.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSPrincipalClass</key>

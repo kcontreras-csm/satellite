@@ -361,9 +361,23 @@ private struct CommitTextField: View {
 private struct GeneralSettings: View {
     @State private var confirmClear = false
     @ObservedObject var certificates = RememberedCertificates.shared
+    @AppStorage(UpdateDefaults.autoCheck) private var autoCheck = true
+    @ObservedObject var securityKeys = FIDODeviceMonitor.shared
+
+    private var versionText: String {
+        let build = Bundle.main.infoDictionary?["SatelliteBuild"] as? String
+        return "Satellite \(AppInfo.version)" + (build.map { " (\($0))" } ?? "")
+    }
 
     var body: some View {
         Form {
+            LabeledContent(versionText) {
+                Button("Check for Updates\u{2026}") { UpdateChecker.shared.check(silent: false) }
+            }
+            Toggle("Check for updates automatically", isOn: $autoCheck)
+
+            Divider()
+
             LabeledContent("Apps & assistants") {
                 Button("Reveal config.json") {
                     NSWorkspace.shared.activateFileViewerSelecting([AppPaths.config])
@@ -382,12 +396,21 @@ private struct GeneralSettings: View {
 
             Divider()
 
+            LabeledContent("Security keys") {
+                Text(securityKeys.devices.isEmpty ? "None detected" : securityKeys.devices.map(\.name).joined(separator: ", "))
+                    .foregroundStyle(securityKeys.devices.isEmpty ? .secondary : .primary)
+            }
+            Text("Sites that ask for a security key (such as a YubiKey) can use any USB key plugged in. Touch ID and iCloud passkeys aren\u{2019}t available in Satellite.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            Divider()
+
             LabeledContent("Client certificates") {
                 Button("Forget All", role: .destructive) { ClientCertificateHandler.shared.forgetAll() }
                     .disabled(certificates.entries.isEmpty)
             }
             if certificates.entries.isEmpty {
-                Text("When a site asks for a certificate, Satellite remembers your choice here so it only asks once.")
+                Text("Satellite picks a certificate for you when only one fits, and asks (once) when several do. Choices it remembers show up here.")
                     .font(.footnote).foregroundStyle(.secondary)
             } else {
                 ForEach(certificates.entries) { entry in
@@ -398,7 +421,7 @@ private struct GeneralSettings: View {
                         }
                     }
                 }
-                Text("A choice covers every address under the domain. Forgetting it makes Satellite ask again the next time that site needs a certificate.")
+                Text("A choice covers every address under the domain. Forgetting it makes Satellite ask again. Satellite only asks when it has to: it uses the one valid certificate the server accepts and, on Salesforce sites, the one the server lists first. If none of yours fits a server, it sends none, like other browsers.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

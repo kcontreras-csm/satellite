@@ -1,0 +1,72 @@
+name: Release
+
+# Publishes a GitHub Release whenever a v* tag is pushed, provided the tagged commit is on main.
+# The version comes from the tag and is stamped into the built app by scripts/bundle.sh, so
+# Resources/Info.plist never changes. The in-app updater reads this permanent feed URL:
+#   https://github.com/<owner>/<repo>/releases/latest/download/appcast.json
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Satellite targets macOS 14+. If a newer SDK is ever required, pin a newer runner label here.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure the tag is on main
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag $GITHUB_REF_NAME does not point to a commit on main; refusing to release."
+            exit 1
+          fi
+
+      - name: Version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag $GITHUB_REF_NAME is not a plain major.minor.patch version."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/bundle.sh release
+
+      - name: Package zip + appcast
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release
+          ditto -c -k --keepParent dist/Satellite.app "release/Satellite-$VERSION.zip"
+          SHA=$(shasum -a 256 "release/Satellite-$VERSION.zip" | awk '{print $1}')
+          cat > release/appcast.json <<EOF
+          {
+            "version": "$VERSION",
+            "url": "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/Satellite-$VERSION.zip",
+            "sha256": "$SHA",
+            "notes": "Satellite $VERSION. See the GitHub release for details."
+          }
+          EOF
+          cat release/appcast.json
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          gh release create "v$VERSION" \
+            "release/Satellite-$VERSION.zip" \
+            "release/appcast.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Satellite $VERSION" \
+            --generate-notes

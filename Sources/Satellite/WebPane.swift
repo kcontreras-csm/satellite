@@ -155,6 +155,12 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         if nsError.domain == "WebKitErrorDomain" && nsError.code == 102 { return }
 
         let failing = (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String) ?? webView.url?.absoluteString ?? ""
+        // The server refused the certificate we sent (or wanted one and got none): don't send the same one again.
+        if nsError.domain == NSURLErrorDomain,
+           [NSURLErrorClientCertificateRejected, NSURLErrorClientCertificateRequired].contains(nsError.code),
+           let host = URL(string: failing)?.host {
+            ClientCertificateHandler.shared.certificateRejected(host: host)
+        }
         let html = """
         <html><head><meta name="color-scheme" content="light dark">
         <style>body{font:15px -apple-system;display:flex;height:100vh;margin:0;align-items:center;justify-content:center;text-align:center}

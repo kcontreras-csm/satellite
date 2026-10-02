@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        UpdateChecker.shared.startPeriodicChecks()
+        FIDODeviceMonitor.shared.start()
     }
 
     // The window closes but sessions stay alive; the Dock icon reopens it.
@@ -33,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Actions
 
     @objc private func openSettings() { SettingsWindowController.shared.present() }
+    @MainActor @objc private func checkForUpdates() { UpdateChecker.shared.check(silent: false) }
     @objc private func goBack() { mainController?.goBack(nil) }
     @objc private func goForward() { mainController?.goForward(nil) }
     @objc private func reloadPage() { mainController?.reloadPage(nil) }
@@ -76,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let name = ProcessInfo.processInfo.processName
         let menu = NSMenu(title: name)
         menu.addItem(item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        menu.addItem(item("Check for Updates\u{2026}", #selector(checkForUpdates), target: self))
         menu.addItem(.separator())
         menu.addItem(item("Settings\u{2026}", #selector(openSettings), ",", target: self))
         menu.addItem(.separator())

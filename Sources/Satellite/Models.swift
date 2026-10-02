@@ -53,7 +53,7 @@ struct AppConfig: Codable {
     static let defaults = AppConfig(
         apps: [
             WebApp(id: "orgcs", name: "OrgCS", url: URL(string: "https://orgcs.lightning.force.com/one/one.app")!, symbol: "cloud.fill"),
-            WebApp(id: "bt2", name: "BT2", url: URL(string: "https://bt2.my.salesforce.com/")!, symbol: "bolt.fill"),
+            WebApp(id: "bt1", name: "BT1", url: URL(string: "https://bt1.my.salesforce.com/")!, symbol: "bolt.fill"),
             // TODO: point this at the real knowledge base once decided (edit config.json).
             // WebApp(id: "knowledge", name: "KB", url: URL(string: "https://help.salesforce.com/")!, symbol: "book.fill"),
         ],

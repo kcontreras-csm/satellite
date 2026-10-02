@@ -246,6 +246,8 @@ final class ExtensionManager: ObservableObject {
         userContentController.removeAllUserScripts()
         for world in installedWorlds { userContentController.removeAllScriptMessageHandlers(from: world) }
         installedWorlds.removeAll()
+        // The WebAuthn page script lives in this shared controller too, and was just cleared with the rest.
+        WebAuthnBridge.shared.install(into: userContentController)
 
         var runningBackgrounds = Set<String>()
         for info in extensions where info.isActive {

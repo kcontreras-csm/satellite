@@ -105,7 +105,27 @@ final class StoreModel: ObservableObject {
 
     // MARK: Actions
 
+    /// Installs run strictly one after another: two installs touching the same folder at once (a double click,
+    /// or two extensions sharing a dependency) would corrupt each other.
+    private var installTail: Task<Void, Never>?
+
     func install(_ entry: StoreEntry) async {
+        // Already installing or queued (for example a double click): nothing more to do.
+        guard busy[entry.id] == nil else { return }
+        busy[entry.id] = "Waiting\u{2026}"
+
+        let previous = installTail
+        let task = Task { @MainActor in
+            await previous?.value
+            await self.performInstall(entry)
+        }
+        installTail = task
+        await task.value
+        busy[entry.id] = nil
+    }
+
+    /// Runs when it is this install's turn, so the plan sees whatever earlier installs just put in place.
+    private func performInstall(_ entry: StoreEntry) async {
         guard let index else { return }
         let plan = plan(for: entry)
         guard plan.canInstall else {
