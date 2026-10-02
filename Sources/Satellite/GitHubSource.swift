@@ -94,8 +94,13 @@ struct GitHubSource: StoreSource {
         // 2. Each extension's manifest, reusing the cached one when GitHub says it hasn't changed.
         let previous = Dictionary(cached?.entries.map { ($0.id, $0) } ?? [], uniquingKeysWith: { first, _ in first })
         let outcomes = await boundedMap(items) { item -> (String, Result<StoreEntry, Error>) in
-            do { return (item.id, .success(try await self.loadEntry(id: item.id, location: item.location, previous: previous[item.id]))) }
-            catch { return (item.id, .failure(error)) }
+            // Same shape as the installer's downloads: keep the await out of the returned tuple (see there).
+            do {
+                let entry = try await self.loadEntry(id: item.id, location: item.location, previous: previous[item.id])
+                return (item.id, .success(entry))
+            } catch {
+                return (item.id, .failure(error))
+            }
         }
 
         var entries: [StoreEntry] = []

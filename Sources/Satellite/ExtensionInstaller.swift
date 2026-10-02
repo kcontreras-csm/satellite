@@ -16,8 +16,15 @@ enum ExtensionInstaller {
         let stagingRoot = staging.resolvingSymlinksInPath().path + "/"
         var downloaded = 0
         let downloads = await boundedMap(entry.files) { file -> (StoreFile, Result<Data, Error>) in
-            do { return (file, .success(try await source.download(file, of: entry))) }
-            catch { return (file, .failure(error)) }
+            // The await stays in its own statement: with `return (file, .success(try await ...))` the optimized
+            // build handed back a corrupted tuple (garbage paths, or no results at all), so installs failed in the
+            // released app while debug builds worked.
+            do {
+                let data = try await source.download(file, of: entry)
+                return (file, .success(data))
+            } catch {
+                return (file, .failure(error))
+            }
         }
         for (file, result) in downloads {
             let data = try result.get()
