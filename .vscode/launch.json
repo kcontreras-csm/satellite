@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:satellite}",
+            "name": "Debug Satellite",
+            "target": "Satellite",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Satellite"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:satellite}",
+            "name": "Release Satellite",
+            "target": "Satellite",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Satellite"
+        }
+    ]
+}
