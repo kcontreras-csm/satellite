@@ -2,7 +2,7 @@
 
 A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in one window.
 
-- **Left rail:** OrgCS, BT1 and Okta (`Cmd+1..9` to switch).
+- **Left rail:** OrgCS, BT1, Okta, Splunk and Knowledge (`Cmd+1..9` to switch).
 - **Right panel:** Claude, Gemini and Slackbot (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
 - **Settings** (`Cmd+,`): extensions, the extension store, software updates, remembered client certificates, clearing website data.
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
