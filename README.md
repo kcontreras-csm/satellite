@@ -38,11 +38,11 @@ Set `SATELLITE_HOME=/some/dir` to use a different data directory (handy for test
 - **Remove** moves the folder to the Trash and deletes its saved data. A library that another extension needs can't be removed.
 - Offline, the last downloaded list is shown.
 
-Publishing is adding a folder and an entry to `extensions.json`; see [store-seed/README.md](store-seed/README.md) (it is written to be the store repository's own README). The `store-seed/` folder is ready to copy into the repository.
+Publishing is pushing a folder to the [store repository](https://github.com/kcontreras-csm/satellite-extensions); a GitHub Action there validates it and regenerates `extensions.json`. Its `EXTENSIONS.md` explains how to publish, and it holds the example extensions (`hello-badge`, `shared-utils`, `quick-link`).
 
 ### Trying an extension before publishing
 
-    SATELLITE_STORE_DIR=/path/to/folder-of-extensions swift run
+    SATELLITE_STORE_DIR=../satellite-extensions swift run    # a clone of the store repository, or any folder of extensions
 
 makes the Store tab read every folder in that directory instead of GitHub (validation and dependency rules still apply).
 
@@ -70,7 +70,7 @@ Each extension is a folder in `~/Library/Application Support/Satellite/Extension
 
 - **Required:** `name`, `version` (`1.2.3`), `author` (a string or `{ name, email, url }`), `description`. The folder name is the extension id (lowercase letters, digits, `.`, `-`, `_`).
 - **Icon:** a `.png`, `.jpg` or `.svg` in the folder, or `symbol:<SF Symbol name>`. With none, Satellite draws a colored tile with the first letter of the name.
-- **Also available:** `category`, `keywords`, `homepage`, `license`, `min_app_version`, `exclude_matches`, `css`, `all_frames`. The full field table is in [store-seed/README.md](store-seed/README.md).
+- **Also available:** `category`, `keywords`, `homepage`, `license`, `min_app_version`, `exclude_matches`, `css`, `all_frames`. The full field table is in the store repository's [EXTENSIONS.md](https://github.com/kcontreras-csm/satellite-extensions/blob/main/EXTENSIONS.md).
 - `matches` uses Chrome match-pattern syntax (`*://*.example.com/*`, `<all_urls>`). Ports and fragments are ignored.
 - `run_at`: `document_start`, `document_end` (default) or `document_idle`.
 - `world`:
@@ -135,4 +135,4 @@ Types are `string`, `number`, `boolean` and `choice`; `description` is optional 
     satellite.settings.onChange((key, value) => { ... })   // the user (or set()) changed a setting
     await satellite.settings.register([...])      // same shape as "settings"; replaces the ones you registered before
 
-`register` is for settings you can only know at runtime (for example a list of queues read from the page). It can't reuse a key declared in the manifest. `onChange` reaches the extension's background script and the main frame of pages it runs in. See `quick-link` in [store-seed/](store-seed/) for a complete example.
+`register` is for settings you can only know at runtime (for example a list of queues read from the page). It can't reuse a key declared in the manifest. `onChange` reaches the extension's background script and the main frame of pages it runs in. See `quick-link` in the [store repository](https://github.com/kcontreras-csm/satellite-extensions) for a complete example.
