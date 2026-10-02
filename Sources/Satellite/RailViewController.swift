@@ -1,34 +1,87 @@
 import AppKit
 
-/// A borderless sidebar button: SF Symbol above a small label, with a rounded highlight when selected.
-final class RailButton: NSButton {
+/// A sidebar button: SF Symbol above a small label, both centered in a fixed-size tile,
+/// with a rounded highlight when selected.
+final class RailButton: NSControl {
+    static let size = NSSize(width: 64, height: 52)
+
     var isSelected = false {
         didSet { refreshAppearance() }
     }
 
+    private let iconView = NSImageView()
+    private let label: NSTextField
+
     init(title: String, symbol: String, tooltip: String) {
-        super.init(frame: .zero)
-        self.title = title
-        toolTip = tooltip
-        isBordered = false
-        setButtonType(.momentaryChange)
-        imagePosition = .imageAbove
-        imageScaling = .scaleProportionallyDown
-        font = .systemFont(ofSize: 10, weight: .medium)
+        label = NSTextField(labelWithString: title)
+        super.init(frame: NSRect(origin: .zero, size: Self.size))
+
         let config = NSImage.SymbolConfiguration(pointSize: 19, weight: .regular)
-        image = (NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-                 ?? NSImage(systemSymbolName: "globe", accessibilityDescription: title))?
+        iconView.image = (NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+                          ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil))?
             .withSymbolConfiguration(config)
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.alignment = .center
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [iconView, label])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 3
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        // Every icon gets the same slot, so differently shaped symbols line up.
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -2),
+            iconView.widthAnchor.constraint(equalToConstant: 30),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
+            widthAnchor.constraint(equalToConstant: Self.size.width),
+            heightAnchor.constraint(equalToConstant: Self.size.height),
+        ])
+
+        toolTip = tooltip
         wantsLayer = true
         layer?.cornerRadius = 9
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 60).isActive = true
-        heightAnchor.constraint(equalToConstant: 52).isActive = true
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
         refreshAppearance()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
+
+    // The icon and label are decoration; the whole tile is the click target.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        alphaValue = 0.6
+        while let next = window.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            let inside = bounds.contains(convert(next.locationInWindow, from: nil))
+            alphaValue = inside ? 0.6 : 1
+            if next.type == .leftMouseUp {
+                alphaValue = 1
+                if inside { sendAction(action, to: target) }
+                return
+            }
+        }
+        alphaValue = 1
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        sendAction(action, to: target)
+        return true
+    }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -36,7 +89,9 @@ final class RailButton: NSButton {
     }
 
     private func refreshAppearance() {
-        contentTintColor = isSelected ? .controlAccentColor : .secondaryLabelColor
+        let tint: NSColor = isSelected ? .controlAccentColor : .secondaryLabelColor
+        iconView.contentTintColor = tint
+        label.textColor = tint
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = isSelected
                 ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
@@ -81,7 +136,6 @@ final class RailViewController: NSViewController {
         let settings = RailButton(title: "Settings", symbol: "gearshape", tooltip: "Settings  \u{2318},")
         settings.target = self
         settings.action = #selector(settingsClicked)
-        settings.translatesAutoresizingMaskIntoConstraints = false
 
         root.addSubview(stack)
         root.addSubview(settings)
@@ -98,7 +152,7 @@ final class RailViewController: NSViewController {
         for (i, button) in buttons.enumerated() { button.isSelected = (i == index) }
     }
 
-    @objc private func appClicked(_ sender: NSButton) {
+    @objc private func appClicked(_ sender: NSControl) {
         onSelect?(sender.tag)
     }
 
