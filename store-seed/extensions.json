@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "extensions": [
+    { "id": "hello-badge" },
+    { "id": "quick-link" },
+    { "id": "shared-utils" }
+  ]
+}

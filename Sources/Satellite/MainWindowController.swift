@@ -8,19 +8,14 @@ extension NSToolbarItem.Identifier {
 }
 
 final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation {
-    let config: AppConfig
-    private let railVC: RailViewController
-    private let contentVC: ContentViewController
-    private let assistantsVC: AssistantsViewController
+    private let registry = UIRegistry.shared
+    private let railVC = RailViewController()
+    private let contentVC = ContentViewController()
+    private let assistantsVC = AssistantsViewController()
     private let assistantsItem: NSSplitViewItem
-    private var stateObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
 
-    init(config: AppConfig, openSettings: @escaping () -> Void) {
-        self.config = config
-        railVC = RailViewController(apps: config.apps)
-        contentVC = ContentViewController(apps: config.apps)
-        assistantsVC = AssistantsViewController(assistants: config.assistants)
-
+    init(openSettings: @escaping () -> Void) {
         let split = NSSplitViewController()
         let railItem = NSSplitViewItem(sidebarWithViewController: railVC)
         railItem.minimumThickness = 76
@@ -59,37 +54,67 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         railVC.onSelect = { [weak self] in self?.selectApp($0) }
         railVC.onOpenSettings = openSettings
 
-        stateObserver = NotificationCenter.default.addObserver(
-            forName: .webPaneStateChanged, object: nil, queue: .main
-        ) { [weak self] _ in self?.window?.toolbar?.validateVisibleItems() }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
+                self?.window?.toolbar?.validateVisibleItems()
+            },
+            center.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
+                self?.applyItems()
+            },
+            center.addObserver(forName: UIRegistry.selectRequested, object: nil, queue: .main) { [weak self] note in
+                guard let raw = note.userInfo?["section"] as? String, let section = SidebarSection(rawValue: raw),
+                      let id = note.userInfo?["id"] as? String else { return }
+                switch section {
+                case .apps: self?.selectApp(id)
+                case .assistants: self?.showAssistant(id)
+                }
+            },
+        ]
 
-        let last = UserDefaults.standard.integer(forKey: "lastSelectedApp")
-        selectApp(config.apps.indices.contains(last) ? last : 0)
+        applyItems()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit {
-        if let stateObserver { NotificationCenter.default.removeObserver(stateObserver) }
+        observers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    // MARK: Actions
+    // MARK: Sidebar items
 
-    func selectApp(_ index: Int) {
-        guard config.apps.indices.contains(index) else { return }
-        contentVC.select(index)
-        railVC.setSelected(index)
-        window?.title = config.apps[index].name
-        UserDefaults.standard.set(index, forKey: "lastSelectedApp")
+    /// Brings the rail, the content area and the assistants panel in line with the registry.
+    private func applyItems() {
+        let apps = registry.items(.apps)
+        contentVC.setItems(apps)
+        railVC.setItems(apps)
+        assistantsVC.setItems(registry.items(.assistants))
+
+        if let current = contentVC.selectedID, let item = apps.first(where: { $0.id == current }) {
+            railVC.setSelected(current)
+            window?.title = item.name
+        } else {
+            let saved = UserDefaults.standard.string(forKey: "lastSelectedAppID")
+            selectApp(apps.first { $0.id == saved }?.id ?? apps.first?.id)
+        }
+    }
+
+    func selectApp(_ id: String?) {
+        guard let id, let item = registry.items(.apps).first(where: { $0.id == id }) else { return }
+        contentVC.select(id)
+        railVC.setSelected(id)
+        window?.title = item.name
+        UserDefaults.standard.set(id, forKey: "lastSelectedAppID")
         window?.toolbar?.validateVisibleItems()
     }
 
-    func showAssistant(_ index: Int) {
-        guard config.assistants.indices.contains(index) else { return }
+    func showAssistant(_ id: String) {
         if assistantsItem.isCollapsed { assistantsItem.animator().isCollapsed = false }
-        assistantsVC.select(index)
+        assistantsVC.select(id)
     }
+
+    // MARK: Actions
 
     @objc func toggleAssistants(_ sender: Any?) {
         assistantsItem.animator().isCollapsed.toggle()

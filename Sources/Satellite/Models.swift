@@ -15,6 +15,7 @@ enum AppPaths {
 
     static var extensions: URL { subdirectory("Extensions") }
     static var extensionData: URL { subdirectory("ExtensionData") }
+    static var storeCache: URL { subdirectory("StoreCache") }
     static var config: URL { support.appendingPathComponent("config.json") }
 
     private static func subdirectory(_ name: String) -> URL {
@@ -31,9 +32,23 @@ struct WebApp: Codable, Hashable {
     var symbol: String
 }
 
+/// Where the extension store reads from. Optional in config.json; defaults to the official repository.
+struct StoreConfig: Codable, Hashable {
+    var repository: String = "kcontreras-csm/satellite-extensions"
+    /// Branch to read; nil means the repository's default branch.
+    var branch: String?
+    /// Sub-folder that holds the extension folders; nil means the repository root.
+    var directory: String?
+
+    static let `default` = StoreConfig()
+}
+
 struct AppConfig: Codable {
     var apps: [WebApp]
     var assistants: [WebApp]
+    var store: StoreConfig?
+
+    var effectiveStore: StoreConfig { store ?? .default }
 
     static let defaults = AppConfig(
         apps: [
@@ -46,7 +61,8 @@ struct AppConfig: Codable {
             WebApp(id: "claude", name: "Claude", url: URL(string: "https://claude.ai/")!, symbol: "sparkle"),
             WebApp(id: "gemini", name: "Gemini", url: URL(string: "https://gemini.google.com/")!, symbol: "sparkles"),
             WebApp(id: "slack", name: "Slackbot", url: URL(string: "https://app.slack.com/client")!, symbol: "number"),
-        ]
+        ],
+        store: .default
     )
 
     static func load() -> AppConfig {

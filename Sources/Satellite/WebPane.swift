@@ -8,8 +8,8 @@ extension Notification.Name {
 /// Owns one WKWebView plus the navigation, UI and download delegates it needs
 /// to behave like a real browser tab (popups, alerts, uploads, downloads).
 final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
-    let name: String
-    let homeURL: URL?
+    private(set) var name: String
+    private(set) var homeURL: URL?
     var onClose: (() -> Void)?
 
     private let providedConfiguration: WKWebViewConfiguration?
@@ -17,8 +17,15 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
     private var observations: [NSKeyValueObservation] = []
     private var downloadDestinations: [ObjectIdentifier: URL] = [:]
 
+    /// Every page web view that currently exists, so extension events can be delivered to them.
+    static let liveWebViews = NSHashTable<WKWebView>.weakObjects()
+
+    private(set) var didCreateView = false
+
     private(set) lazy var webView: WKWebView = {
+        didCreateView = true
         let view = WKWebView(frame: .zero, configuration: providedConfiguration ?? WebEnvironment.makeConfiguration())
+        WebPane.liveWebViews.add(view)
         view.navigationDelegate = self
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
@@ -48,6 +55,24 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         guard !didStartLoading, let homeURL else { return }
         didStartLoading = true
         webView.load(URLRequest(url: homeURL))
+    }
+
+    /// Applies a renamed or re-pointed sidebar item. A page that is already showing moves to the new address.
+    func update(name: String, url: URL) {
+        self.name = name
+        guard url != homeURL else { return }
+        homeURL = url
+        if didStartLoading { webView.load(URLRequest(url: url)) }
+    }
+
+    /// Releases the web view of an item that was removed from the sidebar.
+    func teardown() {
+        guard didCreateView else { return }
+        webView.stopLoading()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.removeFromSuperview()
+        observations.removeAll()
     }
 
     func reloadIfLoaded() {

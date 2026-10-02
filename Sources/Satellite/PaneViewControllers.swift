@@ -3,27 +3,35 @@ import WebKit
 
 /// Center area: one lazily loaded web view per app, only the selected one visible.
 final class ContentViewController: NSViewController {
-    let panes: [WebPane]
-    private(set) var selectedIndex = 0
+    private var panes: [String: WebPane] = [:]
+    private(set) var selectedID: String?
 
-    init(apps: [WebApp]) {
-        panes = apps.map { WebPane(name: $0.name, url: $0.url) }
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not supported") }
+    var selectedPane: WebPane? { selectedID.flatMap { panes[$0] } }
 
     override func loadView() {
         view = NSView()
     }
 
-    var selectedPane: WebPane { panes[selectedIndex] }
+    /// Follows the sidebar: creates panes for new items, drops panes of removed ones, and applies renames
+    /// and address changes. If the selected item disappeared nothing is selected until `select` is called.
+    func setItems(_ items: [SidebarItem]) {
+        let ids = Set(items.map(\.id))
+        for id in panes.keys where !ids.contains(id) {
+            panes.removeValue(forKey: id)?.teardown()
+        }
+        for item in items {
+            if let pane = panes[item.id] {
+                pane.update(name: item.name, url: item.url)
+            } else {
+                panes[item.id] = WebPane(name: item.name, url: item.url)
+            }
+        }
+        if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+    }
 
-    func select(_ index: Int) {
-        guard panes.indices.contains(index) else { return }
-        selectedIndex = index
-        let pane = panes[index]
+    func select(_ id: String) {
+        guard let pane = panes[id] else { return }
+        selectedID = id
         if pane.webView.superview == nil {
             view.addSubview(pane.webView)
             NSLayoutConstraint.activate([
@@ -33,42 +41,33 @@ final class ContentViewController: NSViewController {
                 pane.webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             ])
         }
-        for other in panes where other.webView.superview != nil { other.webView.isHidden = (other !== pane) }
+        for (otherID, other) in panes where other.didCreateView { other.webView.isHidden = (otherID != id) }
         pane.loadIfNeeded()
         view.window?.makeFirstResponder(pane.webView)
     }
 
     func reloadAll() {
-        panes.forEach { $0.reloadIfLoaded() }
+        panes.values.forEach { $0.reloadIfLoaded() }
     }
 }
 
 /// Right panel: a segmented switcher over lazily loaded assistant web views.
 final class AssistantsViewController: NSViewController {
-    let panes: [WebPane]
-    private(set) var selectedIndex = 0
-    private let segmented: NSSegmentedControl
+    private var panes: [String: WebPane] = [:]
+    private var items: [SidebarItem] = []
+    private(set) var selectedID: String?
+    private let segmented = NSSegmentedControl()
     private let container = NSView()
     private var isLoaded = false
 
-    init(assistants: [WebApp]) {
-        panes = assistants.map { WebPane(name: $0.name, url: $0.url) }
-        segmented = NSSegmentedControl(
-            labels: assistants.map(\.name), trackingMode: .selectOne, target: nil, action: nil)
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not supported") }
-
-    var selectedPane: WebPane? { panes.indices.contains(selectedIndex) ? panes[selectedIndex] : nil }
+    var selectedPane: WebPane? { selectedID.flatMap { panes[$0] } }
 
     override func loadView() {
         let root = NSView()
+        segmented.trackingMode = .selectOne
         segmented.target = self
         segmented.action = #selector(segmentChanged(_:))
         segmented.segmentDistribution = .fillEqually
-        segmented.selectedSegment = 0
         segmented.translatesAutoresizingMaskIntoConstraints = false
         container.translatesAutoresizingMaskIntoConstraints = false
 
@@ -84,6 +83,7 @@ final class AssistantsViewController: NSViewController {
             container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
         view = root
+        refreshSegments()
     }
 
     // Nothing is loaded until the panel is actually shown.
@@ -91,16 +91,33 @@ final class AssistantsViewController: NSViewController {
         super.viewDidAppear()
         if !isLoaded {
             isLoaded = true
-            select(selectedIndex)
+            if let selectedID { select(selectedID) }
         }
     }
 
-    func select(_ index: Int) {
-        guard panes.indices.contains(index) else { return }
-        selectedIndex = index
-        segmented.selectedSegment = index
+    func setItems(_ newItems: [SidebarItem]) {
+        let ids = Set(newItems.map(\.id))
+        for id in panes.keys where !ids.contains(id) {
+            panes.removeValue(forKey: id)?.teardown()
+        }
+        for item in newItems {
+            if let pane = panes[item.id] {
+                pane.update(name: item.name, url: item.url)
+            } else {
+                panes[item.id] = WebPane(name: item.name, url: item.url)
+            }
+        }
+        items = newItems
+        if selectedID == nil || !ids.contains(selectedID!) { selectedID = newItems.first?.id }
+        refreshSegments()
+        if isLoaded, let selectedID { select(selectedID) }
+    }
+
+    func select(_ id: String) {
+        guard items.contains(where: { $0.id == id }), let pane = panes[id] else { return }
+        selectedID = id
+        refreshSegments()
         guard isLoaded else { return }
-        let pane = panes[index]
         if pane.webView.superview == nil {
             container.addSubview(pane.webView)
             NSLayoutConstraint.activate([
@@ -110,16 +127,27 @@ final class AssistantsViewController: NSViewController {
                 pane.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             ])
         }
-        for other in panes where other.webView.superview != nil { other.webView.isHidden = (other !== pane) }
+        for (otherID, other) in panes where other.didCreateView { other.webView.isHidden = (otherID != id) }
         pane.loadIfNeeded()
         view.window?.makeFirstResponder(pane.webView)
     }
 
     func reloadAll() {
-        panes.forEach { $0.reloadIfLoaded() }
+        panes.values.forEach { $0.reloadIfLoaded() }
+    }
+
+    private func refreshSegments() {
+        segmented.segmentCount = items.count
+        for (index, item) in items.enumerated() {
+            segmented.setLabel(item.badge.map { "\(item.name) (\($0))" } ?? item.name, forSegment: index)
+            segmented.setToolTip(item.owner.map { "Added by the \($0) extension" }, forSegment: index)
+        }
+        segmented.selectedSegment = items.firstIndex { $0.id == selectedID } ?? -1
+        segmented.isHidden = items.isEmpty
     }
 
     @objc private func segmentChanged(_ sender: NSSegmentedControl) {
-        select(sender.selectedSegment)
+        guard items.indices.contains(sender.selectedSegment) else { return }
+        select(items[sender.selectedSegment].id)
     }
 }

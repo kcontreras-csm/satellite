@@ -8,13 +8,13 @@ final class SettingsWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 440),
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Settings"
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        let view = SettingsView(manager: .shared, reloadPages: { [weak self] in self?.onReloadPages?() })
+        let view = SettingsView(manager: .shared, store: .shared, reloadPages: { [weak self] in self?.onReloadPages?() })
         window.contentViewController = NSHostingController(rootView: view)
         window.center()
     }
@@ -30,38 +30,81 @@ final class SettingsWindowController: NSWindowController {
 }
 
 struct SettingsView: View {
+    enum Tab { case extensions, store, general }
+
     @ObservedObject var manager: ExtensionManager
+    @ObservedObject var store: StoreModel
     let reloadPages: () -> Void
 
+    @State private var tab: Tab
+    @State private var detail: StoreEntry?
+
+    init(manager: ExtensionManager, store: StoreModel, reloadPages: @escaping () -> Void, initialTab: Tab = .extensions) {
+        self.manager = manager
+        self.store = store
+        self.reloadPages = reloadPages
+        _tab = State(initialValue: initialTab)
+    }
+
     var body: some View {
-        TabView {
-            ExtensionsSettings(manager: manager, reloadPages: reloadPages)
+        TabView(selection: $tab) {
+            ExtensionsSettings(manager: manager, store: store, reloadPages: reloadPages, detail: $detail, browseStore: { tab = .store })
                 .tabItem { Label("Extensions", systemImage: "puzzlepiece.extension") }
+                .tag(Tab.extensions)
+            StoreView(store: store, manager: manager, detail: $detail)
+                .tabItem { Label("Store", systemImage: "square.grid.2x2") }
+                .tag(Tab.store)
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(Tab.general)
         }
         .padding(16)
-        .frame(width: 580, height: 440)
+        .frame(width: 800, height: 600)
+        .sheet(item: $detail) { entry in
+            StoreDetailSheet(entry: entry, store: store, manager: manager)
+        }
+        .alert("Satellite", isPresented: Binding(get: { store.alertMessage != nil }, set: { if !$0 { store.alertMessage = nil } })) {
+            Button("OK") {}
+        } message: {
+            Text(store.alertMessage ?? "")
+        }
+        .task { await store.refresh() }
     }
 }
 
+// MARK: - Installed extensions
+
 private struct ExtensionsSettings: View {
     @ObservedObject var manager: ExtensionManager
+    @ObservedObject var store: StoreModel
     let reloadPages: () -> Void
+    @Binding var detail: StoreEntry?
+    let browseStore: () -> Void
+    @ObservedObject var extensionSettings = ExtensionSettings.shared
+
+    @State private var pendingRemoval: ExtensionInfo?
+    @State private var settingsFor: ExtensionInfo?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if manager.extensions.isEmpty {
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
+                    Image(systemName: "puzzlepiece.extension").font(.largeTitle).foregroundStyle(.secondary)
                     Text("No extensions installed").font(.headline)
-                    Text("Drop a folder containing manifest.json into the extensions folder, or install the sample.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+                    Text("Browse the store, or drop a folder containing manifest.json into the extensions folder.")
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Browse the Store", action: browseStore)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(manager.extensions) { info in
-                    ExtensionRow(info: info) { manager.setEnabled(info.id, $0) }
+                    ExtensionRow(
+                        info: info, store: store,
+                        hasSettings: info.error == nil && !manager.settingsSchema(info.id).isEmpty,
+                        openSettings: { settingsFor = info },
+                        setEnabled: { manager.setEnabled(info.id, $0) },
+                        update: { detail = $0 },
+                        remove: { pendingRemoval = info })
                 }
             }
 
@@ -70,36 +113,84 @@ private struct ExtensionsSettings: View {
             HStack {
                 Button("Reveal Folder") { NSWorkspace.shared.open(manager.directory) }
                 Button("Rescan") { manager.reload() }
-                Button("Install Sample") { manager.installSampleExtension() }
+                Button("Create Sample") { manager.installSampleExtension() }
                 Spacer()
+                Button("Browse Store", action: browseStore)
                 Button("Reload Pages", action: reloadPages)
             }
+        }
+        .sheet(item: $settingsFor) { info in
+            ExtensionSettingsSheet(info: info, manager: manager, settings: extensionSettings)
+        }
+        .confirmationDialog(
+            "Remove \u{201C}\(pendingRemoval?.displayName ?? "")\u{201D}?",
+            isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+            presenting: pendingRemoval
+        ) { info in
+            Button("Move to Trash and Delete Its Data", role: .destructive) { store.uninstall(info.id) }
+        } message: { _ in
+            Text("The folder goes to the Trash. Its saved data is deleted.")
         }
     }
 }
 
 private struct ExtensionRow: View {
     let info: ExtensionInfo
+    @ObservedObject var store: StoreModel
+    let hasSettings: Bool
+    let openSettings: () -> Void
     let setEnabled: (Bool) -> Void
+    let update: (StoreEntry) -> Void
+    let remove: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Toggle("", isOn: Binding(get: { info.isEnabled }, set: setEnabled))
-                .labelsHidden()
-                .disabled(info.error != nil)
+        HStack(alignment: .top, spacing: 12) {
+            ExtensionIconView(id: info.id, name: info.displayName, spec: info.manifest?.iconSpec ?? .none, size: 40) {
+                store.icon(for: info)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(info.displayName).font(.headline)
-                    if let version = info.manifest?.version { Text("v\(version)").foregroundStyle(.secondary) }
+                    if let version = info.version { Text("v\(version.description)").foregroundStyle(.secondary) }
+                    if info.isLibrary { Tag(text: "Library") }
+                    if info.origin == nil { Tag(text: "Local") }
+                    if info.hasBackground { Tag(text: "Background") }
+                }
+                if let author = info.manifest?.author.name {
+                    Text("by \(author)").font(.caption).foregroundStyle(.secondary)
                 }
                 if let description = info.manifest?.description {
-                    Text(description).foregroundStyle(.secondary)
+                    Text(description).foregroundStyle(.secondary).lineLimit(2)
                 }
                 if let error = info.error {
                     Text(error).foregroundStyle(.red).font(.callout)
+                } else if info.isLibrary {
+                    Text(info.usedBy.isEmpty ? "Not used by any enabled extension" : "Used by " + info.usedBy.joined(separator: ", "))
+                        .font(.caption).foregroundStyle(.tertiary)
                 } else if let matches = info.manifest?.matches {
-                    Text(matches.joined(separator: "  \u{00B7}  "))
-                        .font(.caption).foregroundStyle(.tertiary).lineLimit(2)
+                    Text(matches.joined(separator: "  \u{00B7}  ")).font(.caption).foregroundStyle(.tertiary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 6) {
+                if !info.isLibrary {
+                    Toggle("", isOn: Binding(get: { info.isEnabled }, set: setEnabled))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .disabled(info.error != nil)
+                }
+                if let entry = store.update(for: info.id) {
+                    Button("Update to \(entry.manifest.version)") { update(entry) }.controlSize(.small)
+                }
+                HStack(spacing: 10) {
+                    if hasSettings {
+                        Button(action: openSettings) { Image(systemName: "slider.horizontal.3") }
+                            .buttonStyle(.borderless)
+                            .help("Extension settings")
+                    }
+                    Button(role: .destructive, action: remove) { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .help("Remove")
                 }
             }
         }
@@ -107,8 +198,169 @@ private struct ExtensionRow: View {
     }
 }
 
+// MARK: - Extension settings
+
+private struct ExtensionSettingsSheet: View {
+    let info: ExtensionInfo
+    @ObservedObject var manager: ExtensionManager
+    @ObservedObject var settings: ExtensionSettings
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let schema = manager.settingsSchema(info.id)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                ExtensionIconView(id: info.id, name: info.displayName, spec: info.manifest?.iconSpec ?? .none, size: 40) {
+                    StoreModel.shared.icon(for: info)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(info.displayName).font(.title3.bold())
+                    Text("Settings").foregroundStyle(.secondary)
+                }
+            }
+            .padding(20)
+            Divider()
+            if schema.isEmpty {
+                Text("This extension has no settings.").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(schema) { definition in
+                            SettingRow(id: info.id, definition: definition, schema: schema, settings: settings)
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Divider()
+            HStack {
+                Button("Reset All") {
+                    for definition in schema { settings.reset(info.id, key: definition.key, schema: schema) }
+                }
+                .disabled(!schema.contains { settings.isCustomized(info.id, $0) })
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding(14)
+        }
+        .frame(width: 480, height: 460)
+    }
+}
+
+private struct SettingRow: View {
+    let id: String
+    let definition: SettingDefinition
+    let schema: [SettingDefinition]
+    @ObservedObject var settings: ExtensionSettings
+    @State private var error: String?
+
+    private var current: SettingValue { settings.value(id, definition) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(definition.title).font(.headline)
+                Spacer()
+                if settings.isCustomized(id, definition) {
+                    Button("Reset") {
+                        settings.reset(id, key: definition.key, schema: schema)
+                        error = nil
+                    }
+                    .buttonStyle(.borderless).font(.caption)
+                }
+            }
+            control
+            if let description = definition.description {
+                Text(description).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+    }
+
+    @ViewBuilder private var control: some View {
+        switch definition.type {
+        case .boolean:
+            Toggle("", isOn: Binding(
+                get: { if case .bool(let flag) = current { return flag } else { return false } },
+                set: { commit(.bool($0)) }))
+                .labelsHidden().toggleStyle(.switch)
+        case .choice:
+            Picker("", selection: Binding(
+                get: { if case .string(let text) = current { return text } else { return "" } },
+                set: { commit(.string($0)) })) {
+                ForEach(definition.options ?? [], id: \.value) { Text($0.label).tag($0.value) }
+            }
+            .labelsHidden().frame(maxWidth: 260, alignment: .leading)
+        case .number:
+            HStack {
+                TextField("", value: Binding(
+                    get: { if case .number(let number) = current { return number } else { return 0 } },
+                    set: { commit(.number($0)) }), format: .number)
+                    .textFieldStyle(.roundedBorder).frame(width: 120)
+                if definition.min != nil || definition.max != nil {
+                    Text(rangeHint).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        case .string:
+            CommitTextField(placeholder: definition.placeholder ?? "", value: { if case .string(let text) = current { return text } else { return "" } }()) {
+                commit(.string($0))
+            }
+        }
+    }
+
+    private var rangeHint: String {
+        func text(_ number: Double) -> String { number == number.rounded() ? String(Int(number)) : String(number) }
+        switch (definition.min, definition.max) {
+        case let (min?, max?): return "\(text(min)) to \(text(max))"
+        case let (min?, nil): return "at least \(text(min))"
+        case let (nil, max?): return "at most \(text(max))"
+        default: return ""
+        }
+    }
+
+    private func commit(_ value: SettingValue) {
+        do {
+            try settings.set(id, key: definition.key, value: value, schema: schema)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// Saves when the user presses Return or leaves the field, not on every keystroke.
+private struct CommitTextField: View {
+    let placeholder: String
+    let value: String
+    let commit: (String) -> Void
+
+    @State private var text: String
+    @FocusState private var focused: Bool
+
+    init(placeholder: String, value: String, commit: @escaping (String) -> Void) {
+        self.placeholder = placeholder
+        self.value = value
+        self.commit = commit
+        _text = State(initialValue: value)
+    }
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onSubmit { commit(text) }
+            .onChange(of: focused) { _, isFocused in if !isFocused { commit(text) } }
+            .onChange(of: value) { _, newValue in text = newValue }
+    }
+}
+
+// MARK: - General
+
 private struct GeneralSettings: View {
     @State private var confirmClear = false
+    @ObservedObject var certificates = RememberedCertificates.shared
 
     var body: some View {
         Form {
@@ -117,7 +369,7 @@ private struct GeneralSettings: View {
                     NSWorkspace.shared.activateFileViewerSelecting([AppPaths.config])
                 }
             }
-            Text("Edit config.json to change URLs or add apps, then relaunch Satellite.")
+            Text("Edit config.json to change URLs, add apps, or point the store at a different repository (\u{201C}store\u{201D}), then relaunch Satellite.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()
@@ -127,6 +379,28 @@ private struct GeneralSettings: View {
             }
             Text("Removes cookies and site storage, which signs you out everywhere.")
                 .font(.footnote).foregroundStyle(.secondary)
+
+            Divider()
+
+            LabeledContent("Client certificates") {
+                Button("Forget All", role: .destructive) { ClientCertificateHandler.shared.forgetAll() }
+                    .disabled(certificates.entries.isEmpty)
+            }
+            if certificates.entries.isEmpty {
+                Text("When a site asks for a certificate, Satellite remembers your choice here so it only asks once.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ForEach(certificates.entries) { entry in
+                    LabeledContent(entry.scope) {
+                        HStack {
+                            Text(entry.name).foregroundStyle(.secondary)
+                            Button("Forget") { ClientCertificateHandler.shared.forget(scope: entry.scope) }
+                        }
+                    }
+                }
+                Text("A choice covers every address under the domain. Forgetting it makes Satellite ask again the next time that site needs a certificate.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .confirmationDialog("Clear all website data?", isPresented: $confirmClear) {

@@ -2,16 +2,22 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainController: MainWindowController?
+    private let viewMenu = NSMenu(title: "View")
+    private var menuObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let config = AppConfig.load()
+        UIRegistry.shared.configure(config)
         ExtensionManager.shared.reload()
 
-        let controller = MainWindowController(config: config, openSettings: { [weak self] in self?.openSettings() })
+        let controller = MainWindowController(openSettings: { [weak self] in self?.openSettings() })
         mainController = controller
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
 
-        buildMenu(config)
+        buildMenu()
+        menuObserver = NotificationCenter.default.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
+            self?.populateViewMenu()
+        }
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -32,16 +38,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func reloadPage() { mainController?.reloadPage(nil) }
     @objc private func hardReloadPage() { mainController?.hardReloadPage(nil) }
     @objc private func toggleAssistants() { mainController?.toggleAssistants(nil) }
-    @objc private func selectApp(_ sender: NSMenuItem) { mainController?.selectApp(sender.tag) }
-    @objc private func showAssistant(_ sender: NSMenuItem) { mainController?.showAssistant(sender.tag) }
+    @objc private func selectApp(_ sender: NSMenuItem) { mainController?.selectApp(sender.representedObject as? String) }
+    @objc private func showAssistant(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? String { mainController?.showAssistant(id) }
+    }
 
     // MARK: Menu
 
-    private func buildMenu(_ config: AppConfig) {
+    private func buildMenu() {
         let main = NSMenu()
         main.addItem(submenu(appMenu()))
         main.addItem(submenu(editMenu()))
-        main.addItem(submenu(viewMenu(config)))
+        populateViewMenu()
+        main.addItem(submenu(viewMenu))
         let window = windowMenu()
         main.addItem(submenu(window))
         NSApp.mainMenu = main
@@ -55,11 +64,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func item(_ title: String, _ action: Selector?, _ key: String = "",
-                      _ modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil, tag: Int = 0) -> NSMenuItem {
+                      _ modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil, represented: String? = nil) -> NSMenuItem {
         let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
         menuItem.keyEquivalentModifierMask = key.isEmpty ? [] : modifiers
         menuItem.target = target
-        menuItem.tag = tag
+        menuItem.representedObject = represented
         return menuItem
     }
 
@@ -90,24 +99,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    private func viewMenu(_ config: AppConfig) -> NSMenu {
-        let menu = NSMenu(title: "View")
-        menu.addItem(item("Back", #selector(goBack), "[", target: self))
-        menu.addItem(item("Forward", #selector(goForward), "]", target: self))
-        menu.addItem(item("Reload Page", #selector(reloadPage), "r", target: self))
-        menu.addItem(item("Reload Without Cache", #selector(hardReloadPage), "r", [.command, .shift], target: self))
-        menu.addItem(.separator())
-        for (index, app) in config.apps.prefix(9).enumerated() {
-            menu.addItem(item(app.name, #selector(selectApp(_:)), "\(index + 1)", target: self, tag: index))
+    /// Rebuilt whenever the sidebar changes so the app and assistant shortcuts follow it.
+    private func populateViewMenu() {
+        viewMenu.removeAllItems()
+        viewMenu.addItem(item("Back", #selector(goBack), "[", target: self))
+        viewMenu.addItem(item("Forward", #selector(goForward), "]", target: self))
+        viewMenu.addItem(item("Reload Page", #selector(reloadPage), "r", target: self))
+        viewMenu.addItem(item("Reload Without Cache", #selector(hardReloadPage), "r", [.command, .shift], target: self))
+        viewMenu.addItem(.separator())
+        for (index, app) in UIRegistry.shared.items(.apps).prefix(9).enumerated() {
+            viewMenu.addItem(item(app.name, #selector(selectApp(_:)), "\(index + 1)", target: self, represented: app.id))
         }
-        menu.addItem(.separator())
-        menu.addItem(item("Toggle Assistants", #selector(toggleAssistants), "0", [.command, .option], target: self))
-        for (index, assistant) in config.assistants.prefix(9).enumerated() {
-            menu.addItem(item(assistant.name, #selector(showAssistant(_:)), "\(index + 1)", [.command, .option], target: self, tag: index))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item("Toggle Assistants", #selector(toggleAssistants), "0", [.command, .option], target: self))
+        for (index, assistant) in UIRegistry.shared.items(.assistants).prefix(9).enumerated() {
+            viewMenu.addItem(item(assistant.name, #selector(showAssistant(_:)), "\(index + 1)", [.command, .option], target: self, represented: assistant.id))
         }
-        menu.addItem(.separator())
-        menu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
-        return menu
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
     }
 
     private func windowMenu() -> NSMenu {
