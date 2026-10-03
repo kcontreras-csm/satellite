@@ -2,9 +2,9 @@
 
 A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in one window.
 
-- **Left rail:** OrgCS, BT1, Okta, Splunk and Knowledge (`Cmd+1..9` to switch).
+- **Left rail:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch).
 - **Right panel:** Claude, Gemini and Slackbot (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
-- **Settings** (`Cmd+,`): extensions, the extension store, software updates, remembered client certificates, clearing website data.
+- **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, website data (clear one site, only the cache so you stay signed in, or everything).
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
 
 Sign-ins persist across launches, client certificates are chosen automatically when only one fits (otherwise you pick once and it is remembered), and USB security keys work for passkey (WebAuthn) sign-in.
@@ -19,16 +19,42 @@ Requires macOS 14+ and the Swift toolchain (Xcode or Command Line Tools).
 
 ## Configuration
 
-`~/Library/Application Support/Satellite/config.json` is created on first launch. Edit it to add or change apps and assistants (name, URL, SF Symbol icon) and relaunch.
+The apps and assistants start as the built-in ones (OrgCS, BT1, Okta, Splunk and others; Claude, Gemini and Slackbot). **Settings > Apps** changes them: drag the grip at the left of a row to reorder, click the pencil to change the name, address or icon (and whether links open as tabs, below), add your own, remove any, and bring a removed one back from **Add**. **Reset to Defaults** restores the built-in ones. Changes apply right away and are saved to `~/Library/Application Support/Satellite/config.json`, which you can also edit by hand (relaunch to pick that up).
 
-Each app has tabs. A link that asks for a new window (`target=_blank`, or `window.open`) opens as a tab inside that app, with a tab bar that appears once there is more than one (`Cmd+W` closes a tab, `Shift+Cmd+[` and `]` switch). Pop-ups that ask for a specific size, such as sign-in windows, keep their own window. Links to other sites normally go to your browser; give an app `"tabs": true` to keep those as tabs too, which is how Okta launches each application:
+Each app has tabs. A link that asks for a new window (`target=_blank`, or `window.open`) opens as a tab inside that app, with a tab bar that appears once there is more than one (`Cmd+W` closes a tab, `Shift+Cmd+[` and `]` switch). Pop-ups that ask for a specific size, such as sign-in windows, keep their own window. Links to other sites normally go to your browser; turn on **Open links in new tabs** for an app (`"tabs": true` in config.json) to keep those as tabs too, which is how Okta launches each application:
 
     { "id": "okta", "name": "Okta", "symbol": "person.badge.key.fill", "url": "https://salesforce.okta.com/", "tabs": true }
- It can also point the store at another repository:
+config.json can also point the store at another repository:
 
     "store": { "repository": "kcontreras-csm/satellite-extensions", "branch": null, "directory": null }
 
 Set `SATELLITE_HOME=/some/dir` to use a different data folder.
+
+## Keyboard shortcuts
+
+Every command is in the menus with its shortcut, and **Settings > Shortcuts** lists all of them: click one, press the keys you want (Delete removes it, Esc cancels), or reset it to the default. A shortcut needs `Cmd` or `Ctrl`, and two commands never share one; standard macOS shortcuts (`Cmd+Q`, `Cmd+C`...) are shown but locked. Your choices are saved per command.
+
+| | |
+|---|---|
+| **Find in page** | `Cmd+F` opens the find bar (starting with the selected text); `Cmd+G` / `Shift+Cmd+G` step to the next / previous match, `Return` / `Shift+Return` do the same in the bar, `Esc` closes it and leaves the match selected. See below for regular expressions |
+| **Zoom** | `Cmd+=` (or `Cmd++`) in, `Cmd+-` out, `Cmd+0` actual size; remembered per website |
+| **Navigation** | `Cmd+[` back, `Cmd+]` forward, `Cmd+R` reload, `Shift+Cmd+R` reload without cache, `Cmd+.` stop, `Shift+Cmd+H` start page of the app in front |
+| **Tabs and apps** | `Shift+Cmd+[` / `]` previous / next tab, `Cmd+W` close tab, `Cmd+1..9` apps, `Opt+Cmd+1..9` assistants, `Opt+Cmd+0` toggle assistants |
+| **Page** | `Cmd+P` print, `Shift+Cmd+L` copy page address, `Shift+Cmd+O` open in your default browser, `Shift+Cmd+C` / `S` copy / save page for AI |
+
+### Find with regular expressions
+
+The find bar highlights every match on the page and counts them ("3 of 17"), in the page and in its frames (iframes), and reaches into shadow DOM, so it works on Lightning pages. It searches the text as it is shown: hidden elements are skipped, runs of spaces count as one, and a match can run across tags like `Hello <b>wor</b>ld`. Three switches sit under the field (they are remembered, and also in the Edit menu):
+
+| | | |
+|---|---|---|
+| `.*` | Use Regular Expression (`Opt+Cmd+R`) | JavaScript syntax. The field turns red and says what is wrong while the pattern is invalid. |
+| `Aa` | Match Case (`Opt+Cmd+C`) | |
+| `ab` | Match Whole Word (`Opt+Cmd+W`) | Also applies to a pattern. |
+
+Without the regex switch what you type is plain text, so `(` or `.` just match themselves and a space matches any run of white space, including the break between two blocks. With it, `^` and `$` match at the start and end of a block (a paragraph, a table cell), `.` stays inside a block while `\s` can cross from one block to the next (`Case Number\s+\d+` finds a label and the value next to it), and `\p{L}`-style classes work. The `...` button copies every match (one per line) to the clipboard. At most 10,000 matches are counted, and a pattern that backtracks badly, like `(a+)+$`, can make the page unresponsive until it finishes, as in any browser.
+
+Extensions can add their own with `satellite.shortcuts` (see below). They show up under an **Extensions** menu and in Settings > Shortcuts, and they never take a shortcut that is already in use.
 
 ## Security keys
 
@@ -72,6 +98,9 @@ Scripts run in an isolated world with top-level `await` and a `satellite` API. E
     satellite.ui.apps / satellite.ui.assistants     // "ui": the left rail and the right panel
       .list() .add({ id, name, url, symbol, badge, index }) .update(id, patch) .remove(id) .select(id)
 
+    satellite.shortcuts                             // "shortcuts": keyboard shortcuts and menu commands
+      .register({ id, title, shortcut: 'Cmd+Shift+K' }, handler) .unregister(id) .list() .onTrigger(callback)
+
     satellite.settings.get / getAll / set / register / onChange
 
-`ui` can add up to 8 items per list and change built-in ones (hide, rename, badge). Those changes last only while the extension is on. `settings` are declared in the manifest, shown under the slider icon in **Settings > Extensions**, and typed as `string`, `number`, `boolean` or `choice`. Toggling an extension takes effect on the next page load.
+`shortcuts.register` adds a command (up to 12 per extension) to the Extensions menu and to Settings > Shortcuts, and resolves with `{ id, title, shortcut, requested, conflict, customized }`: `shortcut` is what it has now and is `null` when another command already has the one it asked for (`conflict` names that command) or the user removed it. Registering again with the same id updates it and keeps the user's choice. When the shortcut is pressed the handler runs in the page in front (if the extension runs on it) and in the extension's background script, so register from the script that should react. `ui` can add up to 8 items per list and change built-in ones (hide, rename, badge). Those changes last only while the extension is on. `settings` are declared in the manifest, shown under the slider icon in **Settings > Extensions**, and typed as `string`, `number`, `boolean` or `choice`. Toggling an extension takes effect on the next page load.

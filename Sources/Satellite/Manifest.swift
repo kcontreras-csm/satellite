@@ -39,6 +39,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
     case notifications
     case openExternal = "open-external"
     case ui
+    case shortcuts
 
     var summary: String {
         switch self {
@@ -46,6 +47,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
         case .notifications: return "Show macOS notifications"
         case .openExternal: return "Open links in your default browser"
         case .ui: return "Add or change items in the sidebar and the assistants panel"
+        case .shortcuts: return "Add keyboard shortcuts and menu commands"
         }
     }
 }

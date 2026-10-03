@@ -120,13 +120,24 @@ final class ExtensionManager: ObservableObject {
     /// Declared settings followed by any the extension registered from JavaScript.
     func settingsSchema(_ id: String) -> [SettingDefinition] { declaredSettings(id) + ExtensionSettings.shared.dynamicSchema(id) }
 
-    /// Calls `window.__satelliteEmit(type, ...arguments)` inside the extension's world in every page it is
+    enum EmitTarget {
+        /// Every page the extension is running in.
+        case everywhere
+        /// Only this page (the one in front). Nothing is sent to pages when it is nil.
+        case frontmost(WKWebView?)
+    }
+
+    /// Calls `window.__satelliteEmit(type, ...arguments)` inside the extension's world in the pages it is
     /// running in (main frames) and in its background page.
-    func emit(_ id: String, type: String, arguments: [Any]) {
+    func emit(_ id: String, type: String, arguments: [Any], to target: EmitTarget = .everywhere) {
         guard let info = info(id), info.isActive, info.manifest?.world != "main" else { return }
         let script = "window.__satelliteEmit && window.__satelliteEmit(\(Self.json(type)), \(Self.json(arguments)))"
         let world = WKContentWorld.world(name: Self.worldName(id))
-        var views = WebPane.liveWebViews.allObjects
+        var views: [WKWebView]
+        switch target {
+        case .everywhere: views = WebPane.liveWebViews.allObjects
+        case .frontmost(let page): views = page.map { [$0] } ?? []
+        }
         if let background = backgrounds[id] { views.append(background.webView) }
         for view in views { view.evaluateJavaScript(script, in: nil, in: world) { _ in } }
     }
@@ -191,6 +202,7 @@ final class ExtensionManager: ObservableObject {
         if deleteData {
             ExtensionStorage.shared.deleteAll(id)
             ExtensionSettings.shared.deleteAll(id)
+            ShortcutRegistry.shared.forgetChoices(owner: id)
         }
         reload()
     }
@@ -277,6 +289,7 @@ final class ExtensionManager: ObservableObject {
         // The WebAuthn page script lives in this shared controller too, and was just cleared with the rest.
         WebAuthnBridge.shared.install(into: userContentController)
         MainActor.assumeIsolated { FrameRegistry.shared.install(into: userContentController) }
+        FindEngine.install(into: userContentController)
 
         var runningBackgrounds = Set<String>()
         for info in extensions where info.isActive {
@@ -302,6 +315,8 @@ final class ExtensionManager: ObservableObject {
                 let fingerprint = source + "|" + granted.map(\.rawValue).sorted().joined(separator: ",")
                 if backgrounds[info.id]?.fingerprint != fingerprint {
                     backgrounds[info.id]?.stop()
+                    // The new code registers its shortcuts again, so ones it no longer has don't linger.
+                    ShortcutRegistry.shared.removeAll(owner: info.id)
                     backgrounds[info.id] = BackgroundHost(
                         extensionID: info.id, source: source, fingerprint: fingerprint, world: world,
                         bridge: ExtensionBridge(extensionID: info.id, permissions: granted))
@@ -313,7 +328,9 @@ final class ExtensionManager: ObservableObject {
             host.stop()
             backgrounds[id] = nil
         }
-        UIRegistry.shared.prune(keeping: Set(extensions.filter(\.isActive).map(\.id)))
+        let active = Set(extensions.filter(\.isActive).map(\.id))
+        UIRegistry.shared.prune(keeping: active)
+        ShortcutRegistry.shared.prune(keeping: active)
     }
 
     // MARK: Script generation
@@ -401,7 +418,9 @@ final class ExtensionManager: ObservableObject {
           window.addEventListener('error', (event) => {
             if (String(event.filename).indexOf('\(id).js') >= 0) __send('error', (event.error && event.error.stack) || event.message);
           });
-          const __listeners = { settings: [] };
+          const __listeners = { settings: [], shortcut: [] };
+          const __shortcutHandlers = Object.create(null);
+          __listeners.shortcut.push(id => { const handler = __shortcutHandlers[id]; if (handler) handler(); });
           window.__satelliteEmit = (type, args) => {
             for (const callback of (__listeners[type] || [])) {
               try { callback(...args); } catch (error) { console.error('[satellite:' + \(json(id)) + ']', error); }
@@ -427,6 +446,16 @@ final class ExtensionManager: ObservableObject {
               notify: (title, body) => post('notify', { title: String(title), body: String(body || '') }),
               openExternal: url => post('openExternal', { url: String(url) }),
               ui: Object.freeze({ apps: list('apps'), assistants: list('assistants') }),
+              shortcuts: Object.freeze({
+                register: async (definition, handler) => {
+                  const info = await post('shortcuts.register', { shortcut: clean(definition) });
+                  if (typeof handler === 'function') __shortcutHandlers[String(definition.id)] = handler;
+                  return info;
+                },
+                unregister: id => { delete __shortcutHandlers[String(id)]; return post('shortcuts.unregister', { id: String(id) }); },
+                list: () => post('shortcuts.list'),
+                onTrigger: callback => { if (typeof callback === 'function') __listeners.shortcut.push(callback); },
+              }),
               settings: Object.freeze({
                 get: key => post('settings.get', { key: String(key) }),
                 getAll: () => post('settings.getAll'),
@@ -567,6 +596,21 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
                 default: try registry.requestSelect(section, owner: extensionID, id: id)
                 }
                 replyHandler(nil, nil)
+            } catch {
+                replyHandler(nil, error.localizedDescription)
+            }
+
+        case "shortcuts.register", "shortcuts.unregister", "shortcuts.list":
+            guard allowed(.shortcuts) else { return }
+            let registry = ShortcutRegistry.shared
+            do {
+                switch method {
+                case "shortcuts.register": replyHandler(try registry.register(owner: extensionID, input: params["shortcut"] as? [String: Any] ?? [:]), nil)
+                case "shortcuts.unregister":
+                    registry.unregister(owner: extensionID, id: params["id"] as? String ?? "")
+                    replyHandler(nil, nil)
+                default: replyHandler(registry.describe(for: extensionID), nil)
+                }
             } catch {
                 replyHandler(nil, error.localizedDescription)
             }

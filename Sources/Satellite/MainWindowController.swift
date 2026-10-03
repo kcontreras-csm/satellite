@@ -132,9 +132,72 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     @objc func goForward(_ sender: Any?) { activePane?.webView.goForward() }
     @objc func reloadPage(_ sender: Any?) { activePane?.webView.reload() }
     @objc func hardReloadPage(_ sender: Any?) { activePane?.webView.reloadFromOrigin() }
+    func stopLoading() { activePane?.webView.stopLoading() }
+
+    /// Back to the address the app (or assistant) in front started at.
+    func goHome() {
+        guard let pane = activePane else { return }
+        if let group = pane.tabHost { group.goHome() } else { pane.goHome() }
+    }
 
     /// The address of the page in front (for prefilling match patterns).
     var currentPageURL: URL? { activePane?.webView.url }
+
+    // MARK: Page tools
+
+    /// Opens the find bar on the page in front, starting with the text selected on it.
+    func showFind() {
+        guard let pane = activePane, pane.didCreateView else { return }
+        pane.webView.evaluateJavaScript("String(window.getSelection())") { [weak pane] result, _ in
+            let selected = (result as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let usable = !selected.isEmpty && selected.count <= 200 && !selected.contains("\n")
+            pane?.findBar.show(prefill: usable ? selected : nil)
+        }
+    }
+
+    /// Steps to the next or previous match, opening the find bar first if nothing has been searched for yet.
+    func find(forward: Bool) {
+        guard let pane = activePane, pane.didCreateView else { return }
+        if pane.findBar.text.isEmpty { showFind() } else { pane.findBar.find(forward: forward) }
+    }
+
+    /// Switches a find option, opening the find bar first if it is closed so the change can be seen.
+    func toggleFindOption(_ option: WritableKeyPath<FindOptions, Bool>) {
+        FindOptions.current[keyPath: option].toggle()
+        if let pane = activePane, pane.didCreateView, !pane.findBar.isShowing { showFind() }
+    }
+
+    func zoom(_ change: ZoomChange) {
+        guard let pane = activePane, pane.didCreateView else { return }
+        let level = pane.zoom(change)
+        Toast.show("Zoom \(Int((level * 100).rounded()))%", in: window, duration: 1.2)
+    }
+
+    func printPage() {
+        guard let pane = activePane, pane.didCreateView, pane.webView.url != nil else {
+            Toast.show("Open a page first", in: window)
+            return
+        }
+        pane.printPage(in: window)
+    }
+
+    func copyPageAddress() {
+        guard let url = activePane?.webView.url else {
+            Toast.show("Open a page first", in: window)
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        Toast.show("Copied page address", in: window)
+    }
+
+    func openInBrowser() {
+        guard let url = activePane?.webView.url else {
+            Toast.show("Open a page first", in: window)
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
 
     // MARK: Tabs
 
@@ -206,7 +269,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     }
 
     /// Navigation commands act on whichever side (apps or assistants) has focus.
-    private var activePane: WebPane? {
+    var activePane: WebPane? {
         if let view = window?.firstResponder as? NSView,
            view.isDescendant(of: assistantsVC.view),
            let pane = assistantsVC.selectedPane {

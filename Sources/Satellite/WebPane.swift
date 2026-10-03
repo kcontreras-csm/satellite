@@ -53,6 +53,16 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         return view
     }()
 
+    private var createdFindBar: FindBar?
+
+    /// The find bar for this page, created the first time it is needed.
+    var findBar: FindBar {
+        if let createdFindBar { return createdFindBar }
+        let bar = FindBar(webView: webView)
+        createdFindBar = bar
+        return bar
+    }
+
     init(name: String, url: URL?, configuration: WKWebViewConfiguration? = nil) {
         self.name = name
         self.homeURL = url
@@ -63,6 +73,12 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
     func loadIfNeeded() {
         guard !didStartLoading, let homeURL else { return }
         didStartLoading = true
+        webView.load(URLRequest(url: homeURL))
+    }
+
+    /// Goes back to the address this item started at.
+    func goHome() {
+        guard let homeURL else { return }
         webView.load(URLRequest(url: homeURL))
     }
 
@@ -134,6 +150,14 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        applyStoredZoom()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        createdFindBar?.pageDidChange()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

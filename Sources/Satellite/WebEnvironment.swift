@@ -9,9 +9,21 @@ enum WebEnvironment {
         "salesforce.com", "force.com", "visualforce.com", "salesforce-setup.com", "my.site.com",
     ]
 
+    /// Single sign-on bounces between okta.com, salesforce.com, force.com and sfdc.cl, which WebKit's tracking
+    /// prevention takes for bounce tracking: it then blocks those sites' cross-site cookies and clears their stored
+    /// data, and sign-in fails ("Restart login cookie not found"). There is no public switch for it, so this uses
+    /// WebKit's private one; if a future macOS drops it, this does nothing.
+    private static let dataStore: WKWebsiteDataStore = {
+        let store = WKWebsiteDataStore.default()
+        if store.responds(to: NSSelectorFromString("_setResourceLoadStatisticsEnabled:")) {
+            store.setValue(false, forKey: "resourceLoadStatisticsEnabled")
+        }
+        return store
+    }()
+
     static func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .default()
+        config.websiteDataStore = dataStore
         config.userContentController = ExtensionManager.shared.userContentController
         config.applicationNameForUserAgent = safariVersionToken
         config.preferences.javaScriptCanOpenWindowsAutomatically = true

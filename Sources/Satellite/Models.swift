@@ -59,7 +59,6 @@ struct AppConfig: Codable {
             WebApp(id: "bt1", name: "BT1", url: URL(string: "https://bt1.my.salesforce.com/")!, symbol: "bolt.fill"),
             WebApp(id: "okta", name: "Okta", url: URL(string: "https://salesforce.okta.com/")!, symbol: "person.badge.key.fill", tabs: true),
             WebApp(id: "splunk", name: "Splunk", url: URL(string: "https://splunk-web.log-analytics.monitoring.aws-esvc1-useast2.aws.sfdc.cl/en-US/app/launcher/home")!, symbol: "text.magnifyingglass"),
-            WebApp(id: "knowledge", name: "Knowledge", url: URL(string: "https://sfservices.lightning.force.com/lightning/page/home")!, symbol: "book.fill"),
         ],
         assistants: [
             WebApp(id: "claude", name: "Claude", url: URL(string: "https://claude.ai/")!, symbol: "sparkle"),

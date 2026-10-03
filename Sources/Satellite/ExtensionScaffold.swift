@@ -226,7 +226,7 @@ enum ExtensionScaffold {
         - **Share it.** Copy this folder into the store repository and push; its GitHub Action lists it. Delete the
           `.satellite` folder first if you like (it is only for your editor).
 
-        Reference: `satellite.storage`, `satellite.settings`, `satellite.ui`, `satellite.notify`, `satellite.openExternal`.
+        Reference: `satellite.storage`, `satellite.settings`, `satellite.ui`, `satellite.shortcuts`, `satellite.notify`, `satellite.openExternal`.
 
         """
     }
@@ -262,6 +262,23 @@ enum ExtensionScaffold {
       select(id: string): Promise<void>;
     }
 
+    interface SatelliteShortcutInput {
+      id: string; title: string;
+      /** Like "Cmd+Shift+K" or "Ctrl+Alt+Left". Needs Cmd or Ctrl. Leave it out for a menu-only command. */
+      shortcut?: string;
+    }
+    interface SatelliteShortcut {
+      id: string; title: string;
+      /** The shortcut it has now (the user may have changed it); null when it has none. */
+      shortcut: string | null;
+      /** The shortcut you asked for. */
+      requested: string | null;
+      /** The command that already had the shortcut you asked for, when that is why `shortcut` is null. */
+      conflict: string | null;
+      /** The user picked a different shortcut, or removed it, in Settings > Shortcuts. */
+      customized: boolean;
+    }
+
     type SatelliteSettingValue = string | number | boolean;
     interface SatelliteSettingDefinition {
       key: string; type: 'string' | 'number' | 'boolean' | 'choice'; title: string; description?: string;
@@ -282,6 +299,17 @@ enum ExtensionScaffold {
       /** Needs the "open-external" permission. http(s) only. */
       openExternal(url: string): Promise<void>;
       ui: { apps: SatelliteSidebarList; assistants: SatelliteSidebarList };
+      /**
+       * Needs the "shortcuts" permission. Commands are listed in the Extensions menu and in Settings > Shortcuts,
+       * where the user can change them. A shortcut that is already in use is not granted (see `conflict`).
+       * The handler runs in the page in front, if this extension runs on it, and in the background script.
+       */
+      shortcuts: {
+        register(definition: SatelliteShortcutInput, handler?: () => void): Promise<SatelliteShortcut>;
+        unregister(id: string): Promise<void>;
+        list(): Promise<SatelliteShortcut[]>;
+        onTrigger(callback: (id: string) => void): void;
+      };
       /** Options declared in manifest.json under "settings" (or registered at runtime). No permission needed. */
       settings: {
         get(key: string): Promise<SatelliteSettingValue>;
@@ -329,8 +357,8 @@ enum ExtensionScaffold {
         "min_app_version": { "type": "string" },
         "permissions": {
           "type": "array", "uniqueItems": true,
-          "items": { "enum": ["storage", "notifications", "open-external", "ui"] },
-          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar)."
+          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts"] },
+          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts)."
         },
         "matches": { "type": "array", "items": { "type": "string" }, "description": "Chrome match patterns, e.g. *://*.example.com/*" },
         "exclude_matches": { "type": "array", "items": { "type": "string" } },

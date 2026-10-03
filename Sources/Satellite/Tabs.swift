@@ -67,6 +67,12 @@ final class TabGroup {
         onChange?()
     }
 
+    /// Shows the app's own tab and takes it back to the address it started at.
+    func goHome() {
+        select(0)
+        home.goHome()
+    }
+
     func reloadAll() { tabs.forEach { $0.reloadIfLoaded() } }
 
     func teardown() {

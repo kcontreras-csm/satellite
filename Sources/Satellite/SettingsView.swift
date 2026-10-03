@@ -32,7 +32,7 @@ final class SettingsWindowController: NSWindowController {
 }
 
 struct SettingsView: View {
-    enum Tab { case extensions, store, general }
+    enum Tab { case extensions, store, apps, shortcuts, general }
 
     @ObservedObject var manager: ExtensionManager
     @ObservedObject var store: StoreModel
@@ -56,7 +56,13 @@ struct SettingsView: View {
             StoreView(store: store, manager: manager, detail: $detail)
                 .tabItem { Label("Store", systemImage: "square.grid.2x2") }
                 .tag(Tab.store)
-            GeneralSettings()
+            AppsSettings()
+                .tabItem { Label("Apps", systemImage: "sidebar.left") }
+                .tag(Tab.apps)
+            ShortcutsSettings()
+                .tabItem { Label("Shortcuts", systemImage: "keyboard") }
+                .tag(Tab.shortcuts)
+            GeneralSettings(reloadPages: reloadPages)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(Tab.general)
         }
@@ -627,7 +633,8 @@ struct ExtensionLogSheet: View {
 // MARK: - General
 
 private struct GeneralSettings: View {
-    @State private var confirmClear = false
+    let reloadPages: () -> Void
+    @State private var showWebsiteData = false
     @ObservedObject var certificates = RememberedCertificates.shared
     @AppStorage(UpdateDefaults.autoCheck) private var autoCheck = true
     @ObservedObject var securityKeys = FIDODeviceMonitor.shared
@@ -649,20 +656,20 @@ private struct GeneralSettings: View {
 
             Divider()
 
-            LabeledContent("Apps & assistants") {
+            LabeledContent("Configuration file") {
                 Button("Reveal config.json") {
                     NSWorkspace.shared.activateFileViewerSelecting([AppPaths.config])
                 }
             }
-            Text("Edit config.json to change URLs, add apps, or point the store at a different repository (\u{201C}store\u{201D}), then relaunch Satellite.")
+            Text("The apps and assistants are edited under Settings > Apps. config.json holds them too, and the extension store (\u{201C}store\u{201D}): edit that by hand to point the store at a different repository, then relaunch Satellite.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()
 
             LabeledContent("Website data") {
-                Button("Clear\u{2026}", role: .destructive) { confirmClear = true }
+                Button("Manage\u{2026}") { showWebsiteData = true }
             }
-            Text("Removes cookies and site storage, which signs you out everywhere.")
+            Text("Cookies, cache and site storage. Clear one site, only the cache (you stay signed in), or everything (which signs you out everywhere).")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()
@@ -719,12 +726,8 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Clear all website data?", isPresented: $confirmClear) {
-            Button("Clear and Sign Out Everywhere", role: .destructive) {
-                WKWebsiteDataStore.default().removeData(
-                    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
-                    modifiedSince: .distantPast, completionHandler: {})
-            }
+        .sheet(isPresented: $showWebsiteData) {
+            WebsiteDataSheet(reloadPages: reloadPages)
         }
     }
 }

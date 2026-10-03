@@ -1,13 +1,29 @@
 import AppKit
 
+/// The application object. It reads key presses before AppKit does, so shortcuts can be told apart exactly
+/// (see `ShortcutRegistry.intercept`).
+final class SatelliteApplication: NSApplication {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, ShortcutRegistry.shared.intercept(event) { return }
+        super.sendEvent(event)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainController: MainWindowController?
+    private let shortcuts = ShortcutRegistry.shared
+    private var observers: [NSObjectProtocol] = []
+
+    private let appMenu = NSMenu(title: ProcessInfo.processInfo.processName)
+    private let fileMenu = NSMenu(title: "File")
+    private let editMenu = NSMenu(title: "Edit")
     private let viewMenu = NSMenu(title: "View")
-    private var menuObserver: NSObjectProtocol?
+    private let extensionsMenu = NSMenu(title: "Extensions")
+    private let windowMenu = NSMenu(title: "Window")
+    private var extensionsItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let config = AppConfig.load()
-        UIRegistry.shared.configure(config)
+        UIRegistry.shared.configure(AppsModel.shared.config)
         ExtensionManager.shared.reload()
 
         let controller = MainWindowController(openSettings: { [weak self] in self?.openSettings() })
@@ -15,10 +31,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
         SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
 
-        buildMenu()
-        menuObserver = NotificationCenter.default.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
-            self?.populateViewMenu()
+        shortcuts.setAppCommands(BuiltInCommands.make(window: controller, app: AppActions(
+            openSettings: { [weak self] in self?.openSettings() },
+            checkForUpdates: { [weak self] in self?.checkForUpdates() },
+            closeTabOrWindow: { [weak self] in self?.closeTabOrWindow() },
+            closeTitle: { [weak self] in self?.closeTitle ?? "Close" })))
+        shortcuts.frontWebView = { [weak controller] in
+            guard let controller, controller.window?.isKeyWindow == true, let pane = controller.activePane, pane.didCreateView else { return nil }
+            return pane.webView
         }
+        syncSidebarShortcuts()
+
+        buildMenu()
+        observers = [
+            NotificationCenter.default.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncSidebarShortcuts() }
+            },
+            NotificationCenter.default.addObserver(forName: ShortcutRegistry.changed, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.populateMenus() }
+            },
+        ]
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         UpdateChecker.shared.startPeriodicChecks()
@@ -36,46 +68,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Actions
 
-    @objc private func openSettings() { SettingsWindowController.shared.present() }
-    @MainActor @objc private func checkForUpdates() { UpdateChecker.shared.check(silent: false) }
-    @objc private func goBack() { mainController?.goBack(nil) }
-    @objc private func goForward() { mainController?.goForward(nil) }
-    @objc private func reloadPage() { mainController?.reloadPage(nil) }
-    @objc private func hardReloadPage() { mainController?.hardReloadPage(nil) }
-    @objc private func toggleAssistants() { mainController?.toggleAssistants(nil) }
-    @objc private func copySnapshot() { mainController?.copySnapshot(nil) }
-    @objc private func showNextTab() { mainController?.showNextTab() }
-    @objc private func showPreviousTab() { mainController?.showPreviousTab() }
+    private func openSettings() { SettingsWindowController.shared.present() }
+    private func checkForUpdates() { Task { @MainActor in UpdateChecker.shared.check(silent: false) } }
+
+    private var hasClosableTab: Bool {
+        NSApp.keyWindow === mainController?.window && mainController?.hasClosableTab == true
+    }
+    private var closeTitle: String { hasClosableTab ? "Close Tab" : "Close" }
+
     /// Closes the current tab if there is one to close, otherwise the window in front.
-    @objc private func closeTabOrWindow() {
+    private func closeTabOrWindow() {
         if NSApp.keyWindow === mainController?.window, mainController?.closeCurrentTab() == true { return }
         NSApp.keyWindow?.performClose(nil)
     }
 
-    @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(closeTabOrWindow) {
-            menuItem.title = NSApp.keyWindow === mainController?.window && mainController?.hasClosableTab == true ? "Close Tab" : "Close"
-        }
-        return true
-    }
-    @objc private func saveSnapshot() { mainController?.saveSnapshot(nil) }
-    @objc private func selectApp(_ sender: NSMenuItem) { mainController?.selectApp(sender.representedObject as? String) }
-    @objc private func showAssistant(_ sender: NSMenuItem) {
-        if let id = sender.representedObject as? String { mainController?.showAssistant(id) }
+    /// Each app and assistant of the sidebar gets a command, so it has a shortcut Settings can change.
+    private func syncSidebarShortcuts() {
+        shortcuts.setSidebar(
+            apps: UIRegistry.shared.items(.apps), assistants: UIRegistry.shared.items(.assistants),
+            selectApp: { [weak self] in self?.mainController?.selectApp($0) },
+            showAssistant: { [weak self] in self?.mainController?.showAssistant($0) })
     }
 
     // MARK: Menu
 
     private func buildMenu() {
         let main = NSMenu()
-        main.addItem(submenu(appMenu()))
-        main.addItem(submenu(editMenu()))
-        populateViewMenu()
+        main.addItem(submenu(appMenu))
+        main.addItem(submenu(fileMenu))
+        main.addItem(submenu(editMenu))
         main.addItem(submenu(viewMenu))
-        let window = windowMenu()
-        main.addItem(submenu(window))
+        let extensions = submenu(extensionsMenu)
+        extensions.isHidden = true
+        extensionsItem = extensions
+        main.addItem(extensions)
+        main.addItem(submenu(windowMenu))
+        populateMenus()
         NSApp.mainMenu = main
-        NSApp.windowsMenu = window
+        NSApp.windowsMenu = windowMenu
     }
 
     private func submenu(_ menu: NSMenu) -> NSMenuItem {
@@ -84,76 +114,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    private func item(_ title: String, _ action: Selector?, _ key: String = "",
-                      _ modifiers: NSEvent.ModifierFlags = .command, target: AnyObject? = nil, represented: String? = nil) -> NSMenuItem {
-        let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: key)
-        menuItem.keyEquivalentModifierMask = key.isEmpty ? [] : modifiers
-        menuItem.target = target
-        menuItem.representedObject = represented
-        return menuItem
+    /// Rebuilt whenever a shortcut, the sidebar or an extension's commands change, so the menus always show
+    /// (and answer to) the shortcuts in use.
+    private func populateMenus() {
+        fill(appMenu, MenuLayout.app)
+        fill(fileMenu, MenuLayout.file)
+        fill(editMenu, MenuLayout.edit)
+        fill(viewMenu, MenuLayout.view)
+        fill(windowMenu, MenuLayout.window)
+        populateExtensionsMenu()
     }
 
-    private func appMenu() -> NSMenu {
-        let name = ProcessInfo.processInfo.processName
-        let menu = NSMenu(title: name)
-        menu.addItem(item("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
-        menu.addItem(item("Check for Updates\u{2026}", #selector(checkForUpdates), target: self))
-        menu.addItem(.separator())
-        menu.addItem(item("Settings\u{2026}", #selector(openSettings), ",", target: self))
-        menu.addItem(.separator())
-        menu.addItem(item("Hide \(name)", #selector(NSApplication.hide(_:)), "h"))
-        menu.addItem(item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
-        menu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:))))
-        menu.addItem(.separator())
-        menu.addItem(item("Quit \(name)", #selector(NSApplication.terminate(_:)), "q"))
-        return menu
-    }
-
-    private func editMenu() -> NSMenu {
-        let menu = NSMenu(title: "Edit")
-        menu.addItem(item("Undo", Selector(("undo:")), "z"))
-        menu.addItem(item("Redo", Selector(("redo:")), "z", [.command, .shift]))
-        menu.addItem(.separator())
-        menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
-        menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
-        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
-        menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
-        return menu
-    }
-
-    /// Rebuilt whenever the sidebar changes so the app and assistant shortcuts follow it.
-    private func populateViewMenu() {
-        viewMenu.removeAllItems()
-        viewMenu.addItem(item("Back", #selector(goBack), "[", target: self))
-        viewMenu.addItem(item("Forward", #selector(goForward), "]", target: self))
-        viewMenu.addItem(item("Reload Page", #selector(reloadPage), "r", target: self))
-        viewMenu.addItem(item("Reload Without Cache", #selector(hardReloadPage), "r", [.command, .shift], target: self))
-        viewMenu.addItem(.separator())
-        for (index, app) in UIRegistry.shared.items(.apps).prefix(9).enumerated() {
-            viewMenu.addItem(item(app.name, #selector(selectApp(_:)), "\(index + 1)", target: self, represented: app.id))
+    private func fill(_ menu: NSMenu, _ layout: [String?]) {
+        menu.removeAllItems()
+        for entry in layout {
+            switch entry {
+            case nil: menu.addItem(.separator())
+            case "@apps": add(commands(in: "Apps", source: .sidebar), to: menu)
+            case "@assistants": add(commands(in: "Assistants", source: .sidebar), to: menu)
+            case let id?: add([id], to: menu)
+            }
         }
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(item("Show Next Tab", #selector(showNextTab), "]", [.command, .shift], target: self))
-        viewMenu.addItem(item("Show Previous Tab", #selector(showPreviousTab), "[", [.command, .shift], target: self))
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(item("Toggle Assistants", #selector(toggleAssistants), "0", [.command, .option], target: self))
-        for (index, assistant) in UIRegistry.shared.items(.assistants).prefix(9).enumerated() {
-            viewMenu.addItem(item(assistant.name, #selector(showAssistant(_:)), "\(index + 1)", [.command, .option], target: self, represented: assistant.id))
-        }
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(item("Copy Page for AI", #selector(copySnapshot), "c", [.command, .shift], target: self))
-        viewMenu.addItem(item("Save Page for AI\u{2026}", #selector(saveSnapshot), "s", [.command, .shift], target: self))
-        viewMenu.addItem(.separator())
-        viewMenu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
     }
 
-    private func windowMenu() -> NSMenu {
-        let menu = NSMenu(title: "Window")
-        menu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
-        menu.addItem(item("Zoom", #selector(NSWindow.performZoom(_:))))
-        menu.addItem(item("Close", #selector(closeTabOrWindow), "w", target: self))
-        menu.addItem(.separator())
-        menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))))
-        return menu
+    private func commands(in group: String, source: ShortcutCommand.Source) -> [String] {
+        shortcuts.commands.filter { $0.group == group && $0.source == source }.map(\.id)
+    }
+
+    private func add(_ ids: [String], to menu: NSMenu) {
+        for id in ids { if let item = shortcuts.menuItem(for: id) { menu.addItem(item) } }
+    }
+
+    /// Commands that extensions registered, under the name of the extension. The menu only shows up when there are any.
+    private func populateExtensionsMenu() {
+        extensionsMenu.removeAllItems()
+        var owners: [String] = []
+        for command in shortcuts.commands {
+            if let owner = command.owner, !owners.contains(owner) { owners.append(owner) }
+        }
+        for owner in owners {
+            extensionsMenu.addItem(.sectionHeader(title: ExtensionManager.shared.info(owner)?.displayName ?? owner))
+            add(shortcuts.commands.filter { $0.owner == owner }.map(\.id), to: extensionsMenu)
+        }
+        extensionsItem?.isHidden = owners.isEmpty
     }
 }
