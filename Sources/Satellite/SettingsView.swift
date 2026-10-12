@@ -632,6 +632,27 @@ struct ExtensionLogSheet: View {
 
 // MARK: - General
 
+/// Which assistants may receive pages without asking, under Settings > General.
+private struct AssistantSharingSettings: View {
+    @ObservedObject var trust = AssistantTrust.shared
+    @ObservedObject var apps = AppsModel.shared
+
+    var body: some View {
+        let assistants = apps.items(.assistants)
+        LabeledContent("Send to assistants") {
+            Text("\(ShortcutRegistry.shared.combo(for: "ai.send")?.glyphs ?? "View menu"), or right-click selected text")
+                .foregroundStyle(.secondary)
+        }
+        Text("Send to Assistant puts the selected text, or the whole page when nothing is selected, into the message box of the assistant shown in the side panel. It never sends the message. Pages use the snapshot text setting above. Satellite asks each time unless you allow an assistant here.")
+            .font(.footnote).foregroundStyle(.secondary)
+        ForEach(assistants) { assistant in
+            Toggle("Send to \(assistant.name) without asking", isOn: Binding(
+                get: { trust.isTrusted(assistant.id) },
+                set: { trust.set(assistant.id, trusted: $0) }))
+        }
+    }
+}
+
 private struct GeneralSettings: View {
     let reloadPages: () -> Void
     @State private var showWebsiteData = false
@@ -693,6 +714,10 @@ private struct GeneralSettings: View {
             Toggle("Include the extension-writing guide", isOn: $snapshotGuide)
             Text("View > Copy Page for AI puts the current page (its HTML including shadow DOM and frames, clickable elements and selectors) on the clipboard. Pages often hold customer data, so by default only interface labels are kept and tokens in links are hidden. Check the result before sharing it.")
                 .font(.footnote).foregroundStyle(.secondary)
+
+            Divider()
+
+            AssistantSharingSettings()
 
             Divider()
 

@@ -4,7 +4,7 @@ A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in o
 
 - **Left rail:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch).
 - **Right panel:** Claude, Gemini and Slackbot (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
-- **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, website data (clear one site, only the cache so you stay signed in, or everything).
+- **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, Slack sign-in, website data (clear one site, only the cache so you stay signed in, or everything).
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
 
 Sign-ins persist across launches, client certificates are chosen automatically when only one fits (otherwise you pick once and it is remembered), and USB security keys work for passkey (WebAuthn) sign-in.
@@ -40,7 +40,7 @@ Every command is in the menus with its shortcut, and **Settings > Shortcuts** li
 | **Zoom** | `Cmd+=` (or `Cmd++`) in, `Cmd+-` out, `Cmd+0` actual size; remembered per website |
 | **Navigation** | `Cmd+[` back, `Cmd+]` forward, `Cmd+R` reload, `Shift+Cmd+R` reload without cache, `Cmd+.` stop, `Shift+Cmd+H` start page of the app in front |
 | **Tabs and apps** | `Shift+Cmd+[` / `]` previous / next tab, `Cmd+W` close tab, `Cmd+1..9` apps, `Opt+Cmd+1..9` assistants, `Opt+Cmd+0` toggle assistants |
-| **Page** | `Cmd+P` print, `Shift+Cmd+L` copy page address, `Shift+Cmd+O` open in your default browser, `Shift+Cmd+C` / `S` copy / save page for AI |
+| **Page** | `Shift+Cmd+E` send to the assistant, `Cmd+P` print, `Shift+Cmd+L` copy page address, `Shift+Cmd+O` open in your default browser, `Shift+Cmd+C` / `S` copy / save page for AI |
 
 ### Find with regular expressions
 
@@ -73,6 +73,8 @@ The installed app reads `https://github.com/kcontreras-csm/satellite/releases/la
 The [store repository](https://github.com/kcontreras-csm/satellite-extensions) lists extensions in an `extensions.json` that a GitHub Action regenerates from its folders. **Settings > Store** shows each one's author, permissions, pages and dependencies before you install it; dependencies install first, and installs are validated before they replace anything. See its `EXTENSIONS.md` for publishing and the full manifest reference. To try extensions from a local folder: `SATELLITE_STORE_DIR=../satellite-extensions swift run`.
 
 To write an extension with an AI, open the page you want to change and use **View > Copy Page for AI** (`Shift+Cmd+C`, or the toolbar button; **Save Page for AI...** writes a file). The snapshot holds the page's HTML including shadow DOM and every frame, a list of clickable elements with selectors, the page's custom JavaScript globals, and a short guide to Satellite's extension format, so you can paste it into an AI together with what you want built. Pages often contain customer data, so by default only interface labels are kept and tokens in links are hidden; change this under **Settings > General**, and check the result before you share it.
+
+**Sending to an assistant.** **View > Send to Assistant** (`Shift+Cmd+E`, also in the toolbar's Page for AI menu) puts the selected text, or the whole page when nothing is selected, into the message box of the assistant shown in the side panel. Right-clicking selected text offers **Ask Claude About This** (or whichever assistant is in the panel, with the others under **Ask Another Assistant**). Satellite never presses send: you read what it added and press Return. A selection goes in quoted, with the page's title and address; a page goes in as a snapshot written for an assistant (no extension guide), using the same text setting as Copy Page for AI, so by default only interface labels are kept. Satellite asks before sending to an assistant until you tick **Don't ask again** (or allow it under **Settings > General**), because pages can hold customer data and not every assistant is approved for it. If it can't find the assistant's message box (signed out, or the site changed), the text goes to the clipboard and Satellite says so.
 
 **Developing an extension** is built in. **Settings > Extensions > New Extension...** creates a working project from a template (change a page, add a sidebar link, or restyle a page), can fill in the pages from the one you are looking at, and opens the folder in VS Code (or Cursor, Zed and others; pick one under Settings > General). The project comes with type definitions for the `satellite` API and a schema for `manifest.json`, so the editor autocompletes both. From then on:
 

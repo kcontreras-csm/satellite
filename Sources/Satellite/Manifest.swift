@@ -36,6 +36,7 @@ struct ExtensionAuthor: Codable, Hashable {
 /// and enforced by the native bridge.
 enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
     case storage
+    case caseAssistant = "case-assistant"
     case notifications
     case openExternal = "open-external"
     case ui
@@ -43,6 +44,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
 
     var summary: String {
         switch self {
+        case .caseAssistant: return "Use ChatGPT and connected read-only sources to prepare case briefs"
         case .storage: return "Save its own data on this Mac"
         case .notifications: return "Show macOS notifications"
         case .openExternal: return "Open links in your default browser"

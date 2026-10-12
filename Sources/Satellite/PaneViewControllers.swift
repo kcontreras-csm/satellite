@@ -149,13 +149,9 @@ final class AssistantsViewController: NSViewController {
         refreshSegments()
     }
 
-    // Nothing is loaded until the panel is actually shown.
     override func viewDidAppear() {
         super.viewDidAppear()
-        if !isLoaded {
-            isLoaded = true
-            if let selectedID { select(selectedID) }
-        }
+        if let selectedID { select(selectedID) }   // focus the shown assistant; all of them are already preloaded
     }
 
     func setItems(_ newItems: [SidebarItem]) {
@@ -167,29 +163,46 @@ final class AssistantsViewController: NSViewController {
             if let pane = panes[item.id] {
                 pane.update(name: item.name, url: item.url)
             } else {
-                panes[item.id] = WebPane(name: item.name, url: item.url)
+                let pane = WebPane(name: item.name, url: item.url)
+                pane.isAssistant = true
+                panes[item.id] = pane
             }
         }
         items = newItems
         if selectedID == nil || !ids.contains(selectedID!) { selectedID = newItems.first?.id }
         refreshSegments()
-        if isLoaded, let selectedID { select(selectedID) }
+        preloadAll()
+        if let selectedID { select(selectedID) }
+    }
+
+    private func attach(_ pane: WebPane) {
+        guard pane.webView.superview == nil else { return }
+        container.addSubview(pane.webView)
+        NSLayoutConstraint.activate([
+            pane.webView.topAnchor.constraint(equalTo: container.topAnchor),
+            pane.webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pane.webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pane.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
+
+    /// Loads every assistant up front — so each is signed in and ready, and its content scripts run immediately
+    /// (e.g. the Slackbot panel's), not just the one in view. Only the selected assistant is shown; the rest load
+    /// behind it.
+    func preloadAll() {
+        isLoaded = true
+        for (id, pane) in panes {
+            attach(pane)
+            pane.loadIfNeeded()
+            pane.webView.isHidden = (id != selectedID)
+        }
     }
 
     func select(_ id: String) {
         guard items.contains(where: { $0.id == id }), let pane = panes[id] else { return }
         selectedID = id
         refreshSegments()
-        guard isLoaded else { return }
-        if pane.webView.superview == nil {
-            container.addSubview(pane.webView)
-            NSLayoutConstraint.activate([
-                pane.webView.topAnchor.constraint(equalTo: container.topAnchor),
-                pane.webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                pane.webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                pane.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-        }
+        attach(pane)
         for (otherID, other) in panes where other.didCreateView { other.webView.isHidden = (otherID != id) }
         pane.loadIfNeeded()
         view.window?.makeFirstResponder(pane.webView)

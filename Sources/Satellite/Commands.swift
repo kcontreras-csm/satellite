@@ -31,7 +31,7 @@ enum MenuLayout {
         "nav.nextTab", "nav.previousTab", nil,
         "assistants.toggle", "@assistants", nil,
         "page.zoomIn", "page.zoomOut", "page.zoomReset", nil,
-        "ai.copy", "ai.save", nil,
+        "ai.copy", "ai.save", "ai.send", nil,
         "window.fullScreen",
     ]
     static let window: [String?] = [
@@ -64,6 +64,12 @@ enum BuiltInCommands {
                 return true
             }
             return result
+        }
+
+        var send = command("ai.send", "Send to Assistant", "AI", key: "Cmd+Shift+E", run { window.sendToAssistant() })
+        send.validate = { item in
+            item.title = window.targetAssistant.map { "Send to \($0.name)" } ?? "Send to Assistant"
+            return window.targetAssistant != nil
         }
 
         var close = command("window.close", "Close", "Window", key: "Cmd+W", fixed: true, run(app.closeTabOrWindow))
@@ -118,6 +124,7 @@ enum BuiltInCommands {
             command("assistants.toggle", "Toggle Assistants", "Assistants", key: "Cmd+Alt+0", run { window.toggleAssistants(nil) }),
             command("ai.copy", "Copy Page for AI", "AI", key: "Cmd+Shift+C", run { window.copySnapshot(nil) }),
             command("ai.save", "Save Page for AI\u{2026}", "AI", key: "Cmd+Shift+S", run { window.saveSnapshot(nil) }),
+            send,
 
             // Window
             close,

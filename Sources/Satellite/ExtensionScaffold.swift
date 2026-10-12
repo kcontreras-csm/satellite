@@ -288,6 +288,15 @@ enum ExtensionScaffold {
 
     interface Satellite {
       readonly extensionId: string;
+      /** Needs the "case-assistant" permission and the main OrgCS frame. No tokens are exposed. */
+      caseAssistant: {
+        status(): Promise<{ chatgpt: boolean; slack: boolean; salesforce: boolean; drive: boolean; sources: string[]; inference?: string; inferenceMessage?: string }>;
+        signIn(): Promise<{ opened: boolean }>;
+        connectSlack(): Promise<{ opened: boolean }>;
+        start(input: { caseId: string; caseNumber: string; prompt: string }): Promise<{ jobId: string; caseId: string; caseNumber: string }>;
+        poll(jobId: string): Promise<{ jobId: string; caseId: string; caseNumber: string; status: string; progress: string; errorCode?: string; httpStatus?: number; research?: Record<string, unknown> }>;
+        cancel(jobId: string): Promise<{ jobId: string; caseId: string; caseNumber: string; status: string; progress: string }>;
+      };
       /** Needs the "storage" permission. */
       storage: {
         get(key: string): Promise<any>;
@@ -357,7 +366,7 @@ enum ExtensionScaffold {
         "min_app_version": { "type": "string" },
         "permissions": {
           "type": "array", "uniqueItems": true,
-          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts"] },
+          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts", "case-assistant"] },
           "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts)."
         },
         "matches": { "type": "array", "items": { "type": "string" }, "description": "Chrome match patterns, e.g. *://*.example.com/*" },

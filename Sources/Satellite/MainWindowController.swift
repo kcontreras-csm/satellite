@@ -17,6 +17,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     private let assistantsVC = AssistantsViewController()
     private let assistantsItem: NSSplitViewItem
     private var observers: [NSObjectProtocol] = []
+    let assistantSender = AssistantSender()
 
     init(openSettings: @escaping () -> Void) {
         let split = NSSplitViewController()
@@ -81,6 +82,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         ]
 
         applyItems()
+
+        SatelliteWebView.menuExtender = { [weak self] view, menu in
+            guard let self else { return }
+            AssistantContextMenu.extend(
+                menu, isAssistantPage: view.pane?.isAssistant ?? false, assistants: self.registry.items(.assistants),
+                preferredID: self.assistantsVC.selectedID,
+                ask: { [weak self, weak view] id in
+                    guard let pane = view?.pane else { return }
+                    self?.send(from: pane, assistantID: id, selectionOnly: true)
+                })
+        }
     }
 
     @available(*, unavailable)
@@ -199,6 +211,41 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         NSWorkspace.shared.open(url)
     }
 
+    // MARK: Sending to an assistant
+
+    /// The assistant that sending goes to: the one shown in the side panel.
+    var targetAssistant: SidebarItem? {
+        let assistants = registry.items(.assistants)
+        return assistants.first { $0.id == assistantsVC.selectedID } ?? assistants.first
+    }
+
+    /// Sends the selection of the app page in front, or the whole page if nothing is selected.
+    func sendToAssistant() {
+        send(from: contentVC.selectedPane, assistantID: nil, selectionOnly: false)
+    }
+
+    @objc func sendToAssistantAction(_ sender: Any?) { sendToAssistant() }
+
+    func send(from source: WebPane?, assistantID: String?, selectionOnly: Bool) {
+        guard let source else {
+            Toast.show("Open a page first", in: window)
+            return
+        }
+        let assistants = registry.items(.assistants)
+        guard let assistant = assistants.first(where: { $0.id == assistantID }) ?? targetAssistant else {
+            Toast.show("Add an assistant in Settings > Apps first", in: window)
+            return
+        }
+        window?.makeKeyAndOrderFront(nil)
+        Task { @MainActor in
+            await assistantSender.send(from: source, to: assistant, selectionOnly: selectionOnly, window: window) { [weak self] id in
+                guard let self else { return nil }
+                self.showAssistant(id)
+                return self.assistantsVC.selectedID == id ? self.assistantsVC.selectedPane : nil
+            }
+        }
+    }
+
     // MARK: Tabs
 
     var hasClosableTab: Bool { contentVC.hasClosableTab }
@@ -310,7 +357,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             item.target = self
             item.action = #selector(copySnapshot(_:))
             let menu = NSMenu()
-            for (title, action) in [("Copy Page for AI", #selector(copySnapshot(_:))), ("Save Page for AI\u{2026}", #selector(saveSnapshot(_:)))] {
+            for (title, action) in [("Copy Page for AI", #selector(copySnapshot(_:))), ("Save Page for AI\u{2026}", #selector(saveSnapshot(_:))),
+                                    ("Send to Assistant", #selector(sendToAssistantAction(_:)))] {
                 let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
                 entry.target = self
                 menu.addItem(entry)

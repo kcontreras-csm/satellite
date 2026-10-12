@@ -111,6 +111,9 @@ enum PageSnapshot {
     struct Options {
         var text: SnapshotTextMode = .current
         var includeGuide = UserDefaults.standard.object(forKey: SnapshotDefaults.includeGuide) as? Bool ?? true
+        /// For an assistant to help with the page, rather than to write an extension: no extension guide, no task
+        /// to fill in, and none of the scripts, stylesheets and globals only an extension author needs.
+        var forAssistant = false
     }
 
     /// Captures the page shown in `webView`, including its frames, as a Markdown document.
@@ -187,8 +190,14 @@ enum PageSnapshot {
     // MARK: Markdown
 
     private static func compose(main: Captured, frames: [Captured], options: Options) -> String {
-        var out = "# Satellite page snapshot\n\n"
-        out += "A snapshot of a web page, captured so you can write a Satellite browser extension for it.\n\n"
+        var out: String
+        if options.forAssistant {
+            out = "# Web page shared from Satellite\n\n"
+            out += "The page the user has open in Satellite (a browser), shared so you can help with it.\n\n"
+        } else {
+            out = "# Satellite page snapshot\n\n"
+            out += "A snapshot of a web page, captured so you can write a Satellite browser extension for it.\n\n"
+        }
         out += "- **URL:** \(main.url)\n"
         out += "- **Title:** \(main.title)\n"
         out += "- **Captured:** \(ISO8601DateFormatter().string(from: Date())) with Satellite \(AppInfo.version)\n"
@@ -198,9 +207,10 @@ enum PageSnapshot {
         out += "- **Frames:** \(frames.isEmpty ? "none besides the main page" : frames.map { "\($0.pathLabel) (\($0.url))" }.joined(separator: ", "))\n"
         out += "\n"
 
-        if options.includeGuide { out += guide + "\n" }
-
-        out += "## Task\n\n_Describe here what the extension should do (and on which part of the page)._\n\n"
+        if !options.forAssistant {
+            if options.includeGuide { out += guide + "\n" }
+            out += "## Task\n\n_Describe here what the extension should do (and on which part of the page)._\n\n"
+        }
 
         for page in [main] + frames {
             let heading = page.path.isEmpty ? "Page" : "Frame \(page.path.map(String.init).joined(separator: "."))"
@@ -210,7 +220,7 @@ enum PageSnapshot {
             if (page.stats["omitted"] ?? 0) > 0 { facts.append("\(page.stats["omitted"] ?? 0) repeated siblings omitted") }
             out += "- **Size:** \(facts.joined(separator: ", ")). Detail level: \(page.detail)\(detailNote(page.detail))\n\n"
 
-            if page.path.isEmpty {
+            if page.path.isEmpty, !options.forAssistant {
                 if !page.globals.isEmpty {
                     out += "### JavaScript globals the page defines\n\n"
                     out += "Only visible to extensions with `\"world\": \"main\"`.\n\n"

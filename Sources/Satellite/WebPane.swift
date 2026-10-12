@@ -13,6 +13,8 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
     var onClose: (() -> Void)?
     /// The tab group this pane belongs to, for panes of the apps rail.
     weak var tabHost: TabGroup?
+    /// One of the assistants of the side panel (which pages are sent to, not from).
+    var isAssistant = false
 
     /// What the tab bar shows: the page title, else the name we gave it.
     var tabTitle: String {
@@ -32,7 +34,8 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
 
     private(set) lazy var webView: WKWebView = {
         didCreateView = true
-        let view = WKWebView(frame: .zero, configuration: providedConfiguration ?? WebEnvironment.makeConfiguration())
+        let view = SatelliteWebView(frame: .zero, configuration: providedConfiguration ?? WebEnvironment.makeConfiguration())
+        view.pane = self
         WebPane.liveWebViews.add(view)
         view.navigationDelegate = self
         view.uiDelegate = self

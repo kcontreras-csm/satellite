@@ -438,6 +438,14 @@ final class ExtensionManager: ObservableObject {
             });
             return Object.freeze({
               extensionId: \(json(id)),
+              caseAssistant: Object.freeze({
+                status: () => post('caseAssistant.status'),
+                signIn: () => post('caseAssistant.signIn'),
+                connectSlack: () => post('caseAssistant.connectSlack'),
+                start: input => post('caseAssistant.start', clean(input)),
+                poll: jobId => post('caseAssistant.poll', { jobId: String(jobId) }),
+                cancel: jobId => post('caseAssistant.cancel', { jobId: String(jobId) }),
+              }),
               storage: Object.freeze({
                 get: key => post('storage.get', { key: String(key) }),
                 set: (key, value) => post('storage.set', { key: String(key), value: value === undefined ? null : value }),
@@ -535,6 +543,24 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
 
         switch method {
+        case "caseAssistant.status", "caseAssistant.signIn", "caseAssistant.connectSlack", "caseAssistant.start", "caseAssistant.poll", "caseAssistant.cancel":
+            guard allowed(.caseAssistant) else { return }
+            guard message.frameInfo.isMainFrame,
+                  message.frameInfo.securityOrigin.protocol == "https",
+                  message.frameInfo.securityOrigin.host == "orgcs.lightning.force.com" else {
+                return replyHandler(nil, "Case Assistant is available only on the OrgCS case page with its permission enabled.")
+            }
+            Task { @MainActor in
+                do {
+                    let result = try await CaseAssistant.shared.handle(method, params: params, owner: extensionID)
+                    if result["status"] as? String == "failed", let progress = result["progress"] as? String {
+                        let code = result["errorCode"] as? String ?? "preparation_failed"
+                        ExtensionLog.shared.record(extensionID, level: "error", message: "[\(code)] \(progress)", source: "Case Assistant")
+                    }
+                    replyHandler(result, nil)
+                } catch { replyHandler(nil, error.localizedDescription) }
+            }
+
         case "storage.get":
             guard allowed(.storage) else { return }
             guard let key = params["key"] as? String else { return replyHandler(nil, "Missing key") }
