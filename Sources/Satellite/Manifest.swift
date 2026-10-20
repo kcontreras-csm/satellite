@@ -41,6 +41,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
     case openExternal = "open-external"
     case ui
     case shortcuts
+    case salesforce
 
     var summary: String {
         switch self {
@@ -50,6 +51,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
         case .openExternal: return "Open links in your default browser"
         case .ui: return "Add or change items in the sidebar and the assistants panel"
         case .shortcuts: return "Add keyboard shortcuts and menu commands"
+        case .salesforce: return "Read Salesforce records you can see, signed in as you (your session stays in Satellite)"
         }
     }
 }

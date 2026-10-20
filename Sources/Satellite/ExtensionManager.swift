@@ -453,6 +453,9 @@ final class ExtensionManager: ObservableObject {
               }),
               notify: (title, body) => post('notify', { title: String(title), body: String(body || '') }),
               openExternal: url => post('openExternal', { url: String(url) }),
+              salesforce: Object.freeze({
+                query: soql => post('salesforce.query', { soql: String(soql) }).then(text => JSON.parse(text)),
+              }),
               ui: Object.freeze({ apps: list('apps'), assistants: list('assistants') }),
               shortcuts: Object.freeze({
                 register: async (definition, handler) => {
@@ -559,6 +562,19 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
                     }
                     replyHandler(result, nil)
                 } catch { replyHandler(nil, error.localizedDescription) }
+            }
+
+        case "salesforce.query":
+            guard allowed(.salesforce) else { return }
+            guard let soql = params["soql"] as? String, !soql.isEmpty else { return replyHandler(nil, "Missing SOQL query") }
+            let origin = message.frameInfo.securityOrigin
+            guard origin.protocol == "https" else {
+                return replyHandler(nil, "Salesforce queries work only on Salesforce Lightning or My Domain pages.")
+            }
+            let host = origin.host
+            Task { @MainActor in
+                do { replyHandler(try await SalesforceAPI.query(soql, pageHost: host), nil) }
+                catch { replyHandler(nil, error.localizedDescription) }
             }
 
         case "storage.get":

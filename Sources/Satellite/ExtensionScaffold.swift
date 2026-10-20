@@ -226,7 +226,7 @@ enum ExtensionScaffold {
         - **Share it.** Copy this folder into the store repository and push; its GitHub Action lists it. Delete the
           `.satellite` folder first if you like (it is only for your editor).
 
-        Reference: `satellite.storage`, `satellite.settings`, `satellite.ui`, `satellite.shortcuts`, `satellite.notify`, `satellite.openExternal`.
+        Reference: `satellite.storage`, `satellite.settings`, `satellite.ui`, `satellite.shortcuts`, `satellite.notify`, `satellite.openExternal`, `satellite.salesforce`.
 
         """
     }
@@ -307,6 +307,13 @@ enum ExtensionScaffold {
       notify(title: string, body?: string): Promise<void>;
       /** Needs the "open-external" permission. http(s) only. */
       openExternal(url: string): Promise<void>;
+      /**
+       * Needs the "salesforce" permission. Runs a read-only SOQL query through the REST API, signed in as the user,
+       * in the org of the page (*.lightning.force.com or *.my.salesforce.com). The session never reaches the page.
+       */
+      salesforce: {
+        query<T = Record<string, any>>(soql: string): Promise<{ totalSize: number; done: boolean; nextRecordsUrl?: string; records: T[] }>;
+      };
       ui: { apps: SatelliteSidebarList; assistants: SatelliteSidebarList };
       /**
        * Needs the "shortcuts" permission. Commands are listed in the Extensions menu and in Settings > Shortcuts,
@@ -366,8 +373,8 @@ enum ExtensionScaffold {
         "min_app_version": { "type": "string" },
         "permissions": {
           "type": "array", "uniqueItems": true,
-          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts", "case-assistant"] },
-          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts)."
+          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts", "case-assistant", "salesforce"] },
+          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts), salesforce (read-only SOQL as the signed-in user)."
         },
         "matches": { "type": "array", "items": { "type": "string" }, "description": "Chrome match patterns, e.g. *://*.example.com/*" },
         "exclude_matches": { "type": "array", "items": { "type": "string" } },
