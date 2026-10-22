@@ -40,6 +40,7 @@ struct SettingsView: View {
 
     @State private var tab: Tab
     @State private var detail: StoreEntry?
+    @State private var githubInstall: GitHubInstallRequest?
 
     init(manager: ExtensionManager, store: StoreModel, reloadPages: @escaping () -> Void, initialTab: Tab = .extensions) {
         self.manager = manager
@@ -50,10 +51,11 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            ExtensionsSettings(manager: manager, store: store, reloadPages: reloadPages, detail: $detail, browseStore: { tab = .store })
+            ExtensionsSettings(manager: manager, store: store, reloadPages: reloadPages, detail: $detail, browseStore: { tab = .store },
+                               installFromGitHub: { githubInstall = GitHubInstallRequest(address: $0) })
                 .tabItem { Label("Extensions", systemImage: "puzzlepiece.extension") }
                 .tag(Tab.extensions)
-            StoreView(store: store, manager: manager, detail: $detail)
+            StoreView(store: store, manager: manager, detail: $detail, installFromGitHub: { githubInstall = GitHubInstallRequest() })
                 .tabItem { Label("Store", systemImage: "square.grid.2x2") }
                 .tag(Tab.store)
             AppsSettings()
@@ -70,6 +72,9 @@ struct SettingsView: View {
         .frame(width: 800, height: 600)
         .sheet(item: $detail) { entry in
             StoreDetailSheet(entry: entry, store: store, manager: manager)
+        }
+        .sheet(item: $githubInstall) { request in
+            GitHubInstallSheet(store: store, manager: manager, initialAddress: request.address)
         }
         .alert("Satellite", isPresented: Binding(get: { store.alertMessage != nil }, set: { if !$0 { store.alertMessage = nil } })) {
             Button("OK") {}
@@ -88,6 +93,8 @@ private struct ExtensionsSettings: View {
     let reloadPages: () -> Void
     @Binding var detail: StoreEntry?
     let browseStore: () -> Void
+    /// Opens the GitHub install sheet, with an address to look up again when checking for an update.
+    let installFromGitHub: (String?) -> Void
     @ObservedObject var extensionSettings = ExtensionSettings.shared
 
     @ObservedObject var logs = ExtensionLog.shared
@@ -105,10 +112,11 @@ private struct ExtensionsSettings: View {
                 VStack(spacing: 8) {
                     Image(systemName: "puzzlepiece.extension").font(.largeTitle).foregroundStyle(.secondary)
                     Text("No extensions installed").font(.headline)
-                    Text("Browse the store, or start your own.")
+                    Text("Browse the store, install one from GitHub, or start your own.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     HStack {
                         Button("Browse the Store", action: browseStore)
+                        Button("Install from GitHub\u{2026}") { installFromGitHub(nil) }
                         Button("New Extension\u{2026}") { creating = true }
                     }
                 }
@@ -124,6 +132,7 @@ private struct ExtensionsSettings: View {
                         openEditor: { CodeEditor.open(info.directory) },
                         setEnabled: { manager.setEnabled(info.id, $0) },
                         update: { detail = $0 },
+                        checkGitHub: { installFromGitHub($0) },
                         remove: { pendingRemoval = info })
                 }
             }
@@ -146,6 +155,7 @@ private struct ExtensionsSettings: View {
                 Button("Reveal Folder") { NSWorkspace.shared.open(manager.directory) }
                 Button("Rescan") { manager.reload() }
                 Spacer()
+                Button("Install from GitHub\u{2026}") { installFromGitHub(nil) }
                 Button("Browse Store", action: browseStore)
                 Button("Reload Pages", action: reloadPages)
             }
@@ -184,6 +194,7 @@ private struct ExtensionRow: View {
     let openEditor: () -> Void
     let setEnabled: (Bool) -> Void
     let update: (StoreEntry) -> Void
+    let checkGitHub: (String) -> Void
     let remove: () -> Void
 
     var body: some View {
@@ -197,6 +208,9 @@ private struct ExtensionRow: View {
                     if let version = info.version { Text("v\(version.description)").foregroundStyle(.secondary) }
                     if info.isLibrary { Tag(text: "Library") }
                     if info.inDevelopmentFolder { Tag(text: "Dev folder") } else if info.origin == nil { Tag(text: "Local") }
+                    else if let origin = info.origin, origin.isFromGitHubAddress {
+                        Tag(text: "GitHub").help("Installed from \(origin.githubAddress ?? origin.source) at commit \(origin.ref.prefix(7))")
+                    }
                     if info.hasBackground { Tag(text: "Background") }
                 }
                 if let author = info.manifest?.author.name {
@@ -224,6 +238,10 @@ private struct ExtensionRow: View {
                 }
                 if let entry = store.update(for: info.id) {
                     Button("Update to \(entry.manifest.version)") { update(entry) }.controlSize(.small)
+                }
+                if let address = info.origin?.githubAddress {
+                    Button("Check for Update") { checkGitHub(address) }.controlSize(.small)
+                        .help("Look up \(address) again on GitHub")
                 }
                 HStack(spacing: 10) {
                     if info.origin == nil {

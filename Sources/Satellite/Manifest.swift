@@ -347,12 +347,43 @@ private struct RawManifest: Decodable {
 struct ExtensionOrigin: Codable, Hashable {
     static let fileName = ".satellite.json"
 
+    enum Channel: String, Codable {
+        case store
+        /// Installed straight from a GitHub address rather than from the store.
+        case github
+    }
+
     /// Repository (or local folder) the extension was installed from.
     var source: String
-    /// Branch, tag or commit it was read at.
+    /// Branch, tag or commit it was read at. Always a commit for GitHub installs.
     var ref: String
     var installedVersion: String
     var installedAt: Date
+    /// Nil in files written before GitHub installs existed, which were all store installs.
+    var channel: Channel? = nil
+    /// GitHub installs: the folder inside the repository ("" for its root).
+    var path: String? = nil
+    /// GitHub installs: the branch or tag that was asked for, nil for the default branch. Checking for an update
+    /// reads it again.
+    var requestedRef: String? = nil
+
+    var isFromGitHubAddress: Bool { channel == .github }
+
+    /// GitHub installs: the address to look up again for an update, as owner/name[/folder][@ref].
+    var githubAddress: String? {
+        guard isFromGitHubAddress else { return nil }
+        var address = source
+        if let path, !path.isEmpty { address += "/" + path }
+        if let requestedRef { address += "@" + requestedRef }
+        return address
+    }
+
+    /// GitHub installs: the installed commit's folder on github.com.
+    var githubURL: URL? {
+        guard isFromGitHubAddress else { return nil }
+        let folder = path.flatMap { $0.isEmpty ? nil : $0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) }
+        return URL(string: "https://github.com/\(source)/tree/\(ref)" + (folder.map { "/" + $0 } ?? ""))
+    }
 
     static func read(from directory: URL) -> ExtensionOrigin? {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(fileName)) else { return nil }

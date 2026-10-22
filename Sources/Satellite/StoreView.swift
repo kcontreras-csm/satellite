@@ -60,6 +60,7 @@ struct StoreView: View {
     @ObservedObject var store: StoreModel
     @ObservedObject var manager: ExtensionManager
     @Binding var detail: StoreEntry?
+    let installFromGitHub: () -> Void
 
     @State private var query = ""
     @State private var category = "All"
@@ -94,6 +95,8 @@ struct StoreView: View {
                 } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh the store")
                     .disabled(store.phase == .loading)
+                Button("Install from GitHub\u{2026}", action: installFromGitHub)
+                    .help("Install an extension that isn\u{2019}t in the store, from a GitHub repository")
             }
 
             if let stale = store.staleReason {
@@ -200,7 +203,7 @@ struct StoreRow: View {
             case .available: Button("Get", action: open).buttonStyle(.borderedProminent)
             case .updateAvailable: Button("Update", action: open).buttonStyle(.borderedProminent)
             case .installed(let version): Label("Installed \(version.description)", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
-            case .localCopy: Button("Replace\u{2026}", action: open)
+            case .localCopy, .fromGitHub: Button("Replace\u{2026}", action: open)
             case .incompatible(let reason): Text(reason).font(.caption).foregroundStyle(.red).frame(maxWidth: 150, alignment: .trailing)
             }
         }
@@ -216,6 +219,118 @@ struct Tag: View {
     }
 }
 
+// MARK: - Review
+
+/// What an extension is and what it may do, shown before it is installed: from the store or from a GitHub address.
+struct ExtensionReviewSections: View {
+    let entry: StoreEntry
+    let plan: InstallPlan
+    @ObservedObject var store: StoreModel
+    @ObservedObject var manager: ExtensionManager
+
+    var body: some View {
+        let m = entry.manifest
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                ExtensionIconView(id: m.id, name: m.name, spec: m.iconSpec, size: 64) { await store.icon(for: entry) }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(m.name).font(.title2.bold())
+                        Text("v\(m.version)").foregroundStyle(.secondary)
+                    }
+                    Text("by \(m.author.name)").foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        if let license = m.license { Text(license) }
+                        if let category = m.category { Text(category) }
+                        if let home = m.homepageURL { Link("Website", destination: home) }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Text(m.description)
+
+            section("Permissions") {
+                let permissions = plan.permissions
+                if permissions.isEmpty {
+                    Text("None. It can\u{2019}t save data, show notifications or open links.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(permissions, id: \.self) { Label($0.summary, systemImage: "checkmark.shield") }
+                }
+            }
+
+            if m.isLibrary {
+                section("Runs on") {
+                    Text("Nothing by itself. Other extensions load this library.").foregroundStyle(.secondary)
+                }
+            } else if m.runsOnPages {
+                section("Runs on these pages") {
+                    ForEach(m.matches, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) }
+                    Text(m.world == "main"
+                         ? "Runs alongside the page\u{2019}s own scripts."
+                         : "Runs isolated from the page\u{2019}s own scripts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if m.background != nil {
+                section("Background") {
+                    Text("Runs a script while Satellite is open, with no page needed.").foregroundStyle(.secondary)
+                }
+            }
+
+            if !m.settings.isEmpty {
+                section("Settings") {
+                    Text(m.settings.map(\.title).joined(separator: ", ")).foregroundStyle(.secondary)
+                    Text("You can change these after installing.").font(.caption).foregroundStyle(.tertiary)
+                }
+            }
+
+            if !m.dependencies.isEmpty {
+                section("Dependencies") {
+                    ForEach(m.dependencyRanges, id: \.id) { dependency in
+                        dependencyLine(dependency.id, dependency.range)
+                    }
+                }
+            }
+
+            if !plan.problems.isEmpty {
+                section("Can\u{2019}t install") {
+                    ForEach(plan.problems, id: \.self) { Text($0).foregroundStyle(.red) }
+                }
+            }
+        }
+    }
+
+    private func dependencyLine(_ id: String, _ range: VersionRange) -> some View {
+        let installed = manager.info(id)
+        let step = plan.steps.first { $0.id == id }
+        let text: String
+        let color: Color
+        if let step {
+            text = step.isUpdate ? "will be updated to \(step.entry.manifest.version)" : "will be installed (\(step.entry.manifest.version))"
+            color = .blue
+        } else if let version = installed?.version, range.contains(version) {
+            text = "already installed (\(version))"
+            color = .green
+        } else {
+            text = "unavailable"
+            color = .red
+        }
+        return HStack {
+            Text("\(id) \(range.text)").font(.system(.body, design: .monospaced))
+            Text(text).foregroundStyle(color)
+        }
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.headline)
+            content()
+        }
+    }
+}
+
 // MARK: - Detail sheet
 
 struct StoreDetailSheet: View {
@@ -225,82 +340,13 @@ struct StoreDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        let m = entry.manifest
         let plan = store.plan(for: entry)
         let status = store.status(of: entry)
 
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(alignment: .top, spacing: 14) {
-                        ExtensionIconView(id: m.id, name: m.name, spec: m.iconSpec, size: 64) { await store.icon(for: entry) }
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 8) {
-                                Text(m.name).font(.title2.bold())
-                                Text("v\(m.version)").foregroundStyle(.secondary)
-                            }
-                            Text("by \(m.author.name)").foregroundStyle(.secondary)
-                            HStack(spacing: 10) {
-                                if let license = m.license { Text(license) }
-                                if let category = m.category { Text(category) }
-                                if let home = m.homepageURL { Link("Website", destination: home) }
-                            }
-                            .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Text(m.description)
-
-                    section("Permissions") {
-                        let permissions = plan.permissions
-                        if permissions.isEmpty {
-                            Text("None. It can\u{2019}t save data, show notifications or open links.").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(permissions, id: \.self) { Label($0.summary, systemImage: "checkmark.shield") }
-                        }
-                    }
-
-                    if m.isLibrary {
-                        section("Runs on") {
-                            Text("Nothing by itself. Other extensions load this library.").foregroundStyle(.secondary)
-                        }
-                    } else if m.runsOnPages {
-                        section("Runs on these pages") {
-                            ForEach(m.matches, id: \.self) { Text($0).font(.system(.caption, design: .monospaced)) }
-                            Text(m.world == "main"
-                                 ? "Runs alongside the page\u{2019}s own scripts."
-                                 : "Runs isolated from the page\u{2019}s own scripts.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if m.background != nil {
-                        section("Background") {
-                            Text("Runs a script while Satellite is open, with no page needed.").foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if !m.settings.isEmpty {
-                        section("Settings") {
-                            Text(m.settings.map(\.title).joined(separator: ", ")).foregroundStyle(.secondary)
-                            Text("You can change these after installing.").font(.caption).foregroundStyle(.tertiary)
-                        }
-                    }
-
-                    if !m.dependencies.isEmpty {
-                        section("Dependencies") {
-                            ForEach(m.dependencyRanges, id: \.id) { dependency in
-                                dependencyLine(dependency.id, dependency.range, plan: plan)
-                            }
-                        }
-                    }
-
-                    if !plan.problems.isEmpty {
-                        section("Can\u{2019}t install") {
-                            ForEach(plan.problems, id: \.self) { Text($0).foregroundStyle(.red) }
-                        }
-                    }
-
+                    ExtensionReviewSections(entry: entry, plan: plan, store: store, manager: manager)
                     Text("\(entry.files.count) file\(entry.files.count == 1 ? "" : "s")\(entry.totalSize > 0 ? " \u{00B7} " + ByteCountFormatter.string(fromByteCount: Int64(entry.totalSize), countStyle: .file) : "") \u{00B7} from \(entry.location?.repository ?? store.index?.source ?? "the store")")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
@@ -310,8 +356,13 @@ struct StoreDetailSheet: View {
 
             Divider()
             HStack {
-                if case .localCopy(let version) = status {
+                switch status {
+                case .localCopy(let version):
                     Text("A local copy (\(version.description)) is installed and will be replaced.").font(.caption).foregroundStyle(.secondary)
+                case .fromGitHub(let version, let repository):
+                    Text("The copy installed from GitHub (\(repository), \(version.description)) will be replaced with the store\u{2019}s.").font(.caption).foregroundStyle(.secondary)
+                default:
+                    EmptyView()
                 }
                 Spacer()
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -343,37 +394,9 @@ struct StoreDetailSheet: View {
         let base: String
         switch status {
         case .updateAvailable: base = "Update"
-        case .localCopy: base = "Replace"
+        case .localCopy, .fromGitHub: base = "Replace"
         default: base = "Install"
         }
         return others > 0 ? "\(base) with \(others) dependenc\(others == 1 ? "y" : "ies")" : base
-    }
-
-    private func dependencyLine(_ id: String, _ range: VersionRange, plan: InstallPlan) -> some View {
-        let installed = manager.info(id)
-        let step = plan.steps.first { $0.id == id }
-        let text: String
-        let color: Color
-        if let step {
-            text = step.isUpdate ? "will be updated to \(step.entry.manifest.version)" : "will be installed (\(step.entry.manifest.version))"
-            color = .blue
-        } else if let version = installed?.version, range.contains(version) {
-            text = "already installed (\(version))"
-            color = .green
-        } else {
-            text = "unavailable"
-            color = .red
-        }
-        return HStack {
-            Text("\(id) \(range.text)").font(.system(.body, design: .monospaced))
-            Text(text).foregroundStyle(color)
-        }
-    }
-
-    private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.headline)
-            content()
-        }
     }
 }

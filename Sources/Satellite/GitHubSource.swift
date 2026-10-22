@@ -16,6 +16,10 @@ struct GitHubSource: StoreSource {
     let ref: String
     let directory: String
     private let rawBase: URL
+    private let webBase: URL
+    /// When set, each listed extension's location is passed through this before its manifest is read (installing
+    /// from a GitHub address pins every branch to a commit first). The store leaves it nil.
+    var pin: (@Sendable (StoreLocation) async throws -> StoreLocation)?
 
     var identifier: String { repository }
     var webURL: URL? { URL(string: "https://github.com/\(repository)") }
@@ -23,6 +27,7 @@ struct GitHubSource: StoreSource {
     static let maxIndexSize = 262_144
     static let maxManifestSize = 262_144
     static let maxExtensions = 200
+    static let maxRefsSize = 4_000_000
 
     init(config: StoreConfig) {
         repository = config.repository
@@ -30,6 +35,7 @@ struct GitHubSource: StoreSource {
         directory = (config.directory ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let env = ProcessInfo.processInfo.environment
         rawBase = URL(string: env["SATELLITE_GITHUB_RAW"] ?? "https://raw.githubusercontent.com")!
+        webBase = URL(string: env["SATELLITE_GITHUB_WEB"] ?? "https://github.com")!
     }
 
     private struct IndexFile: Decodable {
@@ -96,7 +102,9 @@ struct GitHubSource: StoreSource {
         let outcomes = await boundedMap(items) { item -> (String, Result<StoreEntry, Error>) in
             // Same shape as the installer's downloads: keep the await out of the returned tuple (see there).
             do {
-                let entry = try await self.loadEntry(id: item.id, location: item.location, previous: previous[item.id])
+                var location = item.location
+                if let pin = self.pin { location = try await pin(location) }
+                let entry = try await self.loadEntry(id: item.id, location: location, previous: previous[item.id])
                 return (item.id, .success(entry))
             } catch {
                 return (item.id, .failure(error))
@@ -125,13 +133,56 @@ struct GitHubSource: StoreSource {
         let (data, response) = try await fetch(url, maxBytes: Self.maxManifestSize, headers: headers)
         if response.statusCode == 304, let previous { return previous }
         try check(response, what: "manifest.json in \(location.path)", indexNotFound: nil)
+        return try Self.makeEntry(manifest: data, id: id, location: location, etag: response.value(forHTTPHeaderField: "ETag"))
+    }
 
+    private static func makeEntry(manifest data: Data, id: String, location: StoreLocation, etag: String?) throws -> StoreEntry {
         let manifest = try ExtensionManifest.parse(data, folderName: id)
         var paths = ["manifest.json"]
         for path in manifest.referencedFiles where !paths.contains(path) { paths.append(path) }
         let files = paths.map { StoreFile(path: $0, sha: nil, size: 0) }
         try validateStoreEntryFiles(manifest, files: files)
-        return StoreEntry(manifest: manifest, files: files, location: location, etag: response.value(forHTTPHeaderField: "ETag"))
+        return StoreEntry(manifest: manifest, files: files, location: location, etag: etag)
+    }
+
+    // MARK: Single folders (installing from a GitHub address)
+
+    private struct DeclaredID: Decodable { let id: String? }
+
+    /// The extension in one folder of a repository, read without any extensions.json. Its id is the manifest's own
+    /// `id`, else `fallbackID` (the folder or repository name). Nil when the folder has no manifest.json.
+    func standaloneEntry(at location: StoreLocation, fallbackID: String) async throws -> StoreEntry? {
+        try Self.validate(repository: location.repository, ref: location.ref)
+        let url = rawURL(repository: location.repository, ref: location.ref, path: location.path + "/manifest.json")
+        let (data, response) = try await fetch(url, maxBytes: Self.maxManifestSize)
+        if response.statusCode == 404 { return nil }
+        try check(response, what: "manifest.json", indexNotFound: nil)
+
+        let declared = (try? JSONDecoder().decode(DeclaredID.self, from: data))?.id
+        let id = declared ?? fallbackID
+        guard declared != nil || ExtensionManifest.isValidID(id) else {
+            throw StoreError.invalid("\u{201C}\(id)\u{201D} can\u{2019}t be used as an extension id. Add an \u{201C}id\u{201D} to manifest.json: lowercase letters, digits, \u{201C}.\u{201D}, \u{201C}-\u{201D} or \u{201C}_\u{201D}.")
+        }
+        return try Self.makeEntry(manifest: data, id: id, location: location, etag: nil)
+    }
+
+    /// Reads the refs git itself advertises for `repository` (no GitHub API, so no API rate limit).
+    /// Private and missing repositories look the same from outside: GitHub asks for credentials.
+    func refs(of repository: String) async throws -> [String: String] {
+        try Self.validate(repository: repository, ref: "HEAD")
+        let parts = repository.split(separator: "/")
+        var components = URLComponents(url: webBase, resolvingAgainstBaseURL: false)!
+        components.path = (components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path)
+            + "/\(parts[0])/\(parts[1]).git/info/refs"
+        components.queryItems = [URLQueryItem(name: "service", value: "git-upload-pack")]
+        let (data, response) = try await fetch(components.url!, maxBytes: Self.maxRefsSize)
+        if response.statusCode == 401 || response.statusCode == 404 {
+            throw StoreError.invalid("\(repository) was not found on GitHub. Only public repositories can be installed from.")
+        }
+        try check(response, what: repository, indexNotFound: nil)
+        let refs = GitRefs.parse(data)
+        guard !refs.isEmpty else { throw StoreError.invalid("\(repository) has no commits yet.") }
+        return refs
     }
 
     func download(_ file: StoreFile, of entry: StoreEntry) async throws -> Data {

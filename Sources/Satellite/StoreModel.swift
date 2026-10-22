@@ -19,6 +19,9 @@ final class StoreModel: ObservableObject {
         case updateAvailable(from: SemVer)
         /// An extension with this id exists but was not installed from the store.
         case localCopy(SemVer)
+        /// An extension with this id was installed from a GitHub address (the repository); the store's copy would
+        /// replace it, so the store doesn't offer it as an update.
+        case fromGitHub(SemVer, String)
         case incompatible(String)
     }
 
@@ -87,7 +90,8 @@ final class StoreModel: ObservableObject {
     func status(of entry: StoreEntry) -> EntryStatus {
         if let problem = entry.manifest.compatibilityProblem { return .incompatible(problem) }
         guard let info = manager.info(entry.id), let version = info.version else { return .available }
-        if info.origin == nil { return .localCopy(version) }
+        guard let origin = info.origin else { return .localCopy(version) }
+        if origin.isFromGitHubAddress { return .fromGitHub(version, origin.source) }
         return entry.manifest.semver > version ? .updateAvailable(from: version) : .installed(version)
     }
 
@@ -142,6 +146,49 @@ final class StoreModel: ObservableObject {
             } catch {
                 alertMessage = "Couldn\u{2019}t install \u{201C}\(step.entry.manifest.name)\u{201D}: \(error.localizedDescription)"
                 return
+            }
+        }
+    }
+
+    // MARK: Installing from a GitHub address
+
+    func plan(for found: GitHubLookup.Found, in lookup: GitHubLookup.Result) -> InstallPlan {
+        StorePlanner.plan(installing: found.entry, index: lookup.planningIndex(store: index), installed: manager.extensions)
+    }
+
+    /// Installs an extension found at a GitHub address, with any libraries it needs, queued behind other installs.
+    /// Throws so the sheet that asked can say what went wrong.
+    func installFromGitHub(_ found: GitHubLookup.Found, in lookup: GitHubLookup.Result) async throws {
+        guard busy[found.id] == nil else { throw StoreError.invalid("\u{201C}\(found.entry.manifest.name)\u{201D} is already being installed.") }
+        busy[found.id] = "Waiting\u{2026}"
+        defer { busy[found.id] = nil }
+
+        let previous = installTail
+        let task = Task { @MainActor () -> Error? in
+            await previous?.value
+            do { try await self.performGitHubInstall(found, in: lookup); return nil } catch { return error }
+        }
+        installTail = Task { _ = await task.value }
+        if let error = await task.value { throw error }
+    }
+
+    private func performGitHubInstall(_ found: GitHubLookup.Found, in lookup: GitHubLookup.Result) async throws {
+        let plan = plan(for: found, in: lookup)
+        guard plan.canInstall else { throw StoreError.invalid(plan.problems.joined(separator: "\n")) }
+        for step in plan.steps { busy[step.id] = step.isUpdate ? "Updating\u{2026}" : "Installing\u{2026}" }
+        defer { for step in plan.steps { busy[step.id] = nil } }
+
+        let github = GitHubSource(config: .default)   // downloads follow each entry's own pinned location
+        for step in plan.steps {
+            do {
+                if let fromLookup = lookup.installable(step.id) {
+                    try await ExtensionInstaller.installFromGitHub(fromLookup.entry, requestedRef: fromLookup.requestedRef, using: github)
+                } else if let index {
+                    try await ExtensionInstaller.install(step.entry, from: index, using: source)
+                }
+                manager.reload()
+            } catch {
+                throw StoreError.invalid("Couldn\u{2019}t install \u{201C}\(step.entry.manifest.name)\u{201D}: \(error.localizedDescription)")
             }
         }
     }

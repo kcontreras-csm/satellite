@@ -1,9 +1,29 @@
 import Foundation
 
 enum ExtensionInstaller {
-    /// Downloads every file of `entry` at the index's commit into a staging folder, validates the result,
-    /// then swaps it into the extensions directory in one step. A failure leaves any existing version untouched.
+    /// Installs an extension listed in the store.
     static func install(_ entry: StoreEntry, from index: StoreIndex, using source: StoreSource) async throws {
+        try await install(entry, using: source) { version in
+            ExtensionOrigin(source: entry.location?.repository ?? index.source, ref: entry.location?.ref ?? index.revision,
+                            installedVersion: version, installedAt: Date())
+        }
+    }
+
+    /// Installs an extension found at a GitHub address. Its location must be pinned to a commit, so the files
+    /// downloaded are the ones that were reviewed even if the branch moves meanwhile.
+    static func installFromGitHub(_ entry: StoreEntry, requestedRef: String?, using source: StoreSource) async throws {
+        guard let location = entry.location, GitRefs.isCommitID(location.ref) else {
+            throw StoreError.invalid("\u{201C}\(entry.manifest.name)\u{201D} isn\u{2019}t pinned to a commit, so it wasn\u{2019}t installed.")
+        }
+        try await install(entry, using: source) { version in
+            ExtensionOrigin(source: location.repository, ref: location.ref, installedVersion: version, installedAt: Date(),
+                            channel: .github, path: location.path, requestedRef: requestedRef)
+        }
+    }
+
+    /// Downloads every file of `entry` into a staging folder, validates the result, then swaps it into the
+    /// extensions directory in one step. A failure leaves any existing version untouched.
+    private static func install(_ entry: StoreEntry, using source: StoreSource, origin: (_ installedVersion: String) -> ExtensionOrigin) async throws {
         let fm = FileManager.default
         let id = entry.id
         guard ExtensionManifest.isValidID(id) else { throw StoreError.invalid("Invalid extension id.") }
@@ -46,9 +66,7 @@ enum ExtensionInstaller {
             throw StoreError.invalid("\u{201C}\(file)\u{201D} is missing from the download.")
         }
 
-        try ExtensionOrigin(
-            source: entry.location?.repository ?? index.source, ref: entry.location?.ref ?? index.revision,
-            installedVersion: manifest.version, installedAt: Date()).write(to: staging)
+        try origin(manifest.version).write(to: staging)
 
         let target = root.appendingPathComponent(id, isDirectory: true)
         if fm.fileExists(atPath: target.path) {
