@@ -286,8 +286,20 @@ enum ExtensionScaffold {
       min?: number; max?: number;
     }
 
+    type SatelliteShade = 'light' | 'dark';
+
     interface Satellite {
       readonly extensionId: string;
+      /** Light or dark. No permission needed. */
+      appearance: {
+        /** Satellite's appearance (Settings > General > Appearance), which pages see as prefers-color-scheme. */
+        readonly app: SatelliteShade;
+        /** How the page this script runs on looks now. Its own theme can differ from Satellite's (claude.ai and Slack
+         *  have their own setting; Salesforce stays light), so style UI you add to the page from this. */
+        readonly page: SatelliteShade;
+        /** Called with both whenever either changes. */
+        onChange(callback: (appearance: { app: SatelliteShade; page: SatelliteShade }) => void): void;
+      };
       /** Needs the "case-assistant" permission and the main OrgCS frame. No tokens are exposed. */
       caseAssistant: {
         status(): Promise<{ chatgpt: boolean; slack: boolean; salesforce: boolean; drive: boolean; sources: string[]; inference?: string; inferenceMessage?: string }>;

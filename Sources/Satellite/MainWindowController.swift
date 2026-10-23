@@ -56,6 +56,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         window.toolbar = toolbar
 
         railVC.onSelect = { [weak self] in self?.selectApp($0) }
+        railVC.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
         railVC.onOpenSettings = openSettings
 
         let center = NotificationCenter.default
@@ -180,6 +181,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     }
 
     func zoom(_ change: ZoomChange) {
+        if let terminal = focusedTerminal {
+            Toast.show("Text size \(Int(terminal.zoom(change))) pt", in: window, duration: 1.2)
+            return
+        }
         guard let pane = activePane, pane.didCreateView else { return }
         let level = pane.zoom(change)
         Toast.show("Zoom \(Int((level * 100).rounded()))%", in: window, duration: 1.2)
@@ -193,14 +198,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         pane.printPage(in: window)
     }
 
-    func copyPageAddress() {
-        guard let url = activePane?.webView.url else {
+    /// Copies the link of the page in front: the current tab of the app, or the focused assistant.
+    func copyPageAddress(withTitle: Bool = false) {
+        guard let pane = activePane, let url = pane.currentURL, PageLink.isShareable(url) else {
             Toast.show("Open a page first", in: window)
             return
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.absoluteString, forType: .string)
-        Toast.show("Copied page address", in: window)
+        PageLink.copy(url, title: pane.tabTitle, includeTitle: withTitle)
+        Toast.show(withTitle ? "Copied \u{201C}\(pane.tabTitle)\u{201D} with its link" : "Copied link", in: window)
     }
 
     func openInBrowser() {
@@ -241,7 +246,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             await assistantSender.send(from: source, to: assistant, selectionOnly: selectionOnly, window: window) { [weak self] id in
                 guard let self else { return nil }
                 self.showAssistant(id)
-                return self.assistantsVC.selectedID == id ? self.assistantsVC.selectedPane : nil
+                guard self.assistantsVC.selectedID == id else { return nil }
+                if let terminal = self.assistantsVC.selectedTerminal { return .terminal(terminal) }
+                return self.assistantsVC.selectedPane.map { .page($0) }
             }
         }
     }
@@ -315,14 +322,29 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         assistantsVC.reloadAll()
     }
 
-    /// Navigation commands act on whichever side (apps or assistants) has focus.
+    /// Navigation commands act on whichever side (apps or assistants) has focus. While a terminal in the assistants
+    /// panel has it there is no page: Reload, Find, Back... typed in the terminal must not reach past it to the app.
     var activePane: WebPane? {
-        if let view = window?.firstResponder as? NSView,
-           view.isDescendant(of: assistantsVC.view),
-           let pane = assistantsVC.selectedPane {
-            return pane
+        if let view = window?.firstResponder as? NSView, view.isDescendant(of: assistantsVC.view) {
+            return assistantsVC.selectedPane
         }
         return contentVC.selectedPane
+    }
+
+    var hasTerminal: Bool { assistantsVC.firstTerminalID != nil }
+
+    /// Opens the theme list of the terminal in the panel (the first terminal, when another assistant is shown).
+    func chooseTerminalTheme() {
+        guard let id = assistantsVC.selectedTerminal?.id ?? assistantsVC.firstTerminalID else { return }
+        showAssistant(id)
+        assistantsVC.selectedTerminal?.showThemePicker()
+    }
+
+    /// The terminal in the assistants panel, while it has focus.
+    var focusedTerminal: TerminalPane? {
+        guard let terminal = assistantsVC.selectedTerminal, let view = window?.firstResponder as? NSView,
+              view.isDescendant(of: terminal.view) else { return nil }
+        return terminal
     }
 
     // MARK: NSToolbarDelegate

@@ -3,6 +3,13 @@ import AppKit
 /// A sidebar button: SF Symbol above a small label, both centered in a fixed-size tile,
 /// with a rounded highlight when selected and an optional badge.
 final class RailButton: NSControl {
+    /// The right-click menu, made when it opens so it describes the page the app shows now.
+    var makeMenu: (() -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        makeMenu?() ?? super.menu(for: event)
+    }
+
     static let size = NSSize(width: 64, height: 52)
 
     var isSelected = false {
@@ -129,6 +136,8 @@ final class RailButton: NSControl {
 final class RailViewController: NSViewController {
     var onSelect: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// The right-click menu of an app, by id.
+    var menuForApp: ((String) -> NSMenu?)?
 
     private var items: [SidebarItem] = []
     private var buttons: [RailButton] = []
@@ -191,6 +200,8 @@ final class RailViewController: NSViewController {
         if index < 9 { tooltip += "  \u{2318}\(index + 1)" }
         if let owner = item.owner { tooltip += "\nAdded by the \(owner) extension" }
         button.configure(title: item.name, symbol: item.symbol, tooltip: tooltip, badge: item.badge)
+        let id = item.id
+        button.makeMenu = { [weak self] in self?.menuForApp?(id) }
     }
 
     private func applySelection() {

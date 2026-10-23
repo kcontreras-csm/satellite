@@ -426,6 +426,7 @@ final class ExtensionManager: ObservableObject {
               try { callback(...args); } catch (error) { console.error('[satellite:' + \(json(id)) + ']', error); }
             }
           };
+          const __appearance = \(ExtensionAppearance.script(tag: json(id)));
           const satellite = (() => {
             const clean = value => value === undefined ? null : JSON.parse(JSON.stringify(value));
             const post = (method, params) => window.webkit.messageHandlers.satellite.postMessage({ method, params: params || {} });
@@ -438,6 +439,7 @@ final class ExtensionManager: ObservableObject {
             });
             return Object.freeze({
               extensionId: \(json(id)),
+              appearance: __appearance,
               caseAssistant: Object.freeze({
                 status: () => post('caseAssistant.status'),
                 signIn: () => post('caseAssistant.signIn'),

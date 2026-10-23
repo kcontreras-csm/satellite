@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var extensionsItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppAppearance.apply()   // before any window, so nothing opens in the wrong appearance
         UIRegistry.shared.configure(AppsModel.shared.config)
         ExtensionManager.shared.reload()
 

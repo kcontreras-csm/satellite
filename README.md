@@ -3,7 +3,7 @@
 A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in one window.
 
 - **Left rail:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch).
-- **Right panel:** Claude, Gemini and Slackbot (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
+- **Right panel:** Claude, Gemini, Slackbot and a Terminal (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
 - **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, Slack sign-in, website data (clear one site, only the cache so you stay signed in, or everything).
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
 
@@ -19,7 +19,7 @@ Requires macOS 14+ and the Swift toolchain (Xcode or Command Line Tools).
 
 ## Configuration
 
-The apps and assistants start as the built-in ones (OrgCS, BT1, Okta, Splunk and others; Claude, Gemini and Slackbot). **Settings > Apps** changes them: drag the grip at the left of a row to reorder, click the pencil to change the name, address or icon (and whether links open as tabs, below), add your own, remove any, and bring a removed one back from **Add**. **Reset to Defaults** restores the built-in ones. Changes apply right away and are saved to `~/Library/Application Support/Satellite/config.json`, which you can also edit by hand (relaunch to pick that up).
+The apps and assistants start as the built-in ones (OrgCS, BT1, Okta, Splunk and others; Claude, Gemini, Slackbot and Terminal). **Settings > Apps** changes them: drag the grip at the left of a row to reorder, click the pencil to change the name, address or icon (and whether links open as tabs, below), add your own, remove any, and bring a removed one back from **Add**. **Reset to Defaults** restores the built-in ones. Changes apply right away and are saved to `~/Library/Application Support/Satellite/config.json`, which you can also edit by hand (relaunch to pick that up).
 
 Each app has tabs. A link that asks for a new window (`target=_blank`, or `window.open`) opens as a tab inside that app, with a tab bar that appears once there is more than one (`Cmd+W` closes a tab, `Shift+Cmd+[` and `]` switch). Pop-ups that ask for a specific size, such as sign-in windows, keep their own window. Links to other sites normally go to your browser; turn on **Open links in new tabs** for an app (`"tabs": true` in config.json) to keep those as tabs too, which is how Okta launches each application:
 
@@ -36,11 +36,13 @@ Every command is in the menus with its shortcut, and **Settings > Shortcuts** li
 
 | | |
 |---|---|
+| **Paste without formatting** | `Opt+Shift+Cmd+V` (Edit > Paste and Match Style) pastes only the text, without fonts, colors or links, in pages and text fields. `Shift+Cmd+V` is left to the page, since many web apps use it for their own plain paste; to have Satellite take it instead, assign it to Paste and Match Style in Settings > Shortcuts |
 | **Find in page** | `Cmd+F` opens the find bar (starting with the selected text); `Cmd+G` / `Shift+Cmd+G` step to the next / previous match, `Return` / `Shift+Return` do the same in the bar, `Esc` closes it and leaves the match selected. See below for regular expressions |
 | **Zoom** | `Cmd+=` (or `Cmd++`) in, `Cmd+-` out, `Cmd+0` actual size; remembered per website |
 | **Navigation** | `Cmd+[` back, `Cmd+]` forward, `Cmd+R` reload, `Shift+Cmd+R` reload without cache, `Cmd+.` stop, `Shift+Cmd+H` start page of the app in front |
 | **Tabs and apps** | `Shift+Cmd+[` / `]` previous / next tab, `Cmd+W` close tab, `Cmd+1..9` apps, `Opt+Cmd+1..9` assistants, `Opt+Cmd+0` toggle assistants |
-| **Page** | `Shift+Cmd+E` send to the assistant, `Cmd+P` print, `Shift+Cmd+L` copy page address, `Shift+Cmd+O` open in your default browser, `Shift+Cmd+C` / `S` copy / save page for AI |
+| **Page** | `Shift+Cmd+E` send to the assistant, `Cmd+P` print, `Shift+Cmd+L` copy link, `Shift+Cmd+O` open in your default browser, `Shift+Cmd+C` / `S` copy / save page for AI |
+| **Links** | **File > Copy Link** (`Shift+Cmd+L`) copies the address of the page in front: the app's current tab, or the assistant you're in. **Copy Link with Title** (no shortcut until you give it one) copies it with the page's title: rich editors such as Slack, Docs and Mail paste the title, linked; plain text gets "title — address". Right-click a tab, or an app in the left rail, for the same two plus **Open in Default Browser** for that tab (or the tab the app shows), and **Close Tab** on tabs that can close |
 
 ### Find with regular expressions
 
@@ -55,6 +57,23 @@ The find bar highlights every match on the page and counts them ("3 of 17"), in 
 Without the regex switch what you type is plain text, so `(` or `.` just match themselves and a space matches any run of white space, including the break between two blocks. With it, `^` and `$` match at the start and end of a block (a paragraph, a table cell), `.` stays inside a block while `\s` can cross from one block to the next (`Case Number\s+\d+` finds a label and the value next to it), and `\p{L}`-style classes work. The `...` button copies every match (one per line) to the clipboard. At most 10,000 matches are counted, and a pattern that backtracks badly, like `(a+)+$`, can make the page unresponsive until it finishes, as in any browser.
 
 Extensions can add their own with `satellite.shortcuts` (see below). They show up under an **Extensions** menu and in Settings > Shortcuts, and they never take a shortcut that is already in use.
+
+## Terminal
+
+An assistant can be a terminal instead of a web page: a native one ([SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)) in the right panel, so a command-line agent such as Claude Code runs next to your work with its full-screen interface, colors and mouse support. It starts with the other assistants and keeps running while you switch between them. **Settings > Apps > Add > New Terminal...** adds one; leave **Command** empty for your login shell, or give one to run (`claude`), and optionally a folder to **Start in**. In config.json:
+
+    { "id": "terminal", "name": "Terminal", "symbol": "terminal", "terminal": {} }
+    { "id": "claude-code", "name": "Claude Code", "symbol": "sparkle", "terminal": { "command": "claude", "directory": "~/dot", "theme": "Dracula", "padding": 1.5 } }
+
+**Padding** puts room around the text, counted in characters (the width of one, in the terminal's font): 0 (the default) to 10, in halves, set with **Padding** when you edit the terminal in Settings > Apps, or `"padding"` in config.json. It is filled with the terminal's background, grows and shrinks with the text size (`Cmd+=` / `Cmd+-`), and a click in it goes to the terminal.
+
+**Themes.** Right-click in a terminal and choose **Theme > Choose Theme...** (or **View > Terminal Theme...**, which also works while a program in the terminal takes the mouse for itself) to pick one of 1,251 color themes from [Gogh](https://github.com/Gogh-Co/Gogh): search by name, filter dark or light, and each one shows in the terminal as you select it. Whatever is shown when the list closes is kept for that terminal (`"theme"` in config.json); **Revert** goes back to the one it had. The same list is under **Theme > Choose...** when you edit the terminal in **Settings > Apps**; there the theme is part of the form, so it applies when you save and Cancel leaves it as it was. **System**, the default, uses the system's text colors and follows light and dark mode. The themes are part of Satellite, so nothing is downloaded: `scripts/update-gogh-themes.py <commit>` regenerates them from a given Gogh commit, for review like any other change.
+
+It always starts through your login shell, interactive, so your PATH and profile apply (an app opened from the Dock otherwise gets a bare PATH, where `claude` and Homebrew tools aren't found); after a command exits, the shell stays open. When the session ends, press Return to start a new one. While it has focus it keeps every key without `Cmd` (Ctrl+R, Ctrl+A... belong to the program in it); `Cmd+C`, `Cmd+V` and `Cmd+A` copy, paste and select, `Cmd+=` / `Cmd+-` / `Cmd+0` change its text size, and page commands such as Reload and Find don't reach past it to the app page.
+
+**Send to Assistant** and **Ask About This** work with it: the selection (or page) is pasted at the prompt and Return is not pressed. Satellite only pastes there when the program running has turned on bracketed paste (zsh and Claude Code do), so the text arrives as text; otherwise each line break would act as Return and run the lines as commands, so it goes to the clipboard instead. Nothing on a web page or in an extension can read from or type into a terminal: only config.json and Settings make one, extensions can't add one or change what it runs (like any built-in item they can only rename, hide or badge it), and there is no bridge from pages to it. Case data sent into a terminal that runs an AI tool goes to that tool, so the same rules apply as for the other assistants.
+
+`scripts/test-terminal.sh` checks all of this against your real login shell (without touching your clipboard). SwiftTerm's license is in `THIRD_PARTY_NOTICES.md`, which the bundled app includes.
 
 ## Security keys
 
@@ -108,4 +127,6 @@ Scripts run in an isolated world with top-level `await` and a `satellite` API. E
 
     satellite.settings.get / getAll / set / register / onChange
 
-`shortcuts.register` adds a command (up to 12 per extension) to the Extensions menu and to Settings > Shortcuts, and resolves with `{ id, title, shortcut, requested, conflict, customized }`: `shortcut` is what it has now and is `null` when another command already has the one it asked for (`conflict` names that command) or the user removed it. Registering again with the same id updates it and keeps the user's choice. When the shortcut is pressed the handler runs in the page in front (if the extension runs on it) and in the extension's background script, so register from the script that should react. `ui` can add up to 8 items per list and change built-in ones (hide, rename, badge). Those changes last only while the extension is on. `settings` are declared in the manifest, shown under the slider icon in **Settings > Extensions**, and typed as `string`, `number`, `boolean` or `choice`. Toggling an extension takes effect on the next page load. `salesforce.query(soql)` resolves with the REST API's `{ totalSize, done, records }` for the org of the page (`orgcs.lightning.force.com` queries `orgcs.my.salesforce.com`), signed in with your Salesforce session inside Satellite; the session itself never reaches the page, and only read-only queries are offered.
+    satellite.appearance.app / .page / .onChange(callback)   // light or dark (no permission needed)
+
+`shortcuts.register` adds a command (up to 12 per extension) to the Extensions menu and to Settings > Shortcuts, and resolves with `{ id, title, shortcut, requested, conflict, customized }`: `shortcut` is what it has now and is `null` when another command already has the one it asked for (`conflict` names that command) or the user removed it. Registering again with the same id updates it and keeps the user's choice. When the shortcut is pressed the handler runs in the page in front (if the extension runs on it) and in the extension's background script, so register from the script that should react. `ui` can add up to 8 items per list and change built-in ones (hide, rename, badge). Those changes last only while the extension is on. `settings` are declared in the manifest, shown under the slider icon in **Settings > Extensions**, and typed as `string`, `number`, `boolean` or `choice`. Toggling an extension takes effect on the next page load. `appearance.app` is `'light'` or `'dark'`: Satellite's appearance (**Settings > General > Appearance**: System, Light or Dark), which pages also see as `prefers-color-scheme`, so `@media (prefers-color-scheme: dark)` in an extension's CSS follows it too. `appearance.page` is how the page itself looks, which can differ: claude.ai and Slack have their own theme setting, and a site without a dark mode, like Salesforce, stays light in a dark Satellite. It is read from the page's background and declared color scheme, so UI an extension adds to a page should follow `page`. `onChange` is called with `{ app, page }` whenever either changes. `salesforce.query(soql)` resolves with the REST API's `{ totalSize, done, records }` for the org of the page (`orgcs.lightning.force.com` queries `orgcs.my.salesforce.com`), signed in with your Salesforce session inside Satellite; the session itself never reaches the page, and only read-only queries are offered.

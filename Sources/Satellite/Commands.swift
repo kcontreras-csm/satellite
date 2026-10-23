@@ -18,10 +18,10 @@ enum MenuLayout {
         "app.hide", "app.hideOthers", "app.showAll", nil, "app.quit",
     ]
     static let file: [String?] = [
-        "page.print", nil, "page.copyAddress", "page.openInBrowser", nil, "window.close",
+        "page.print", nil, "page.copyAddress", "page.copyLinkWithTitle", "page.openInBrowser", nil, "window.close",
     ]
     static let edit: [String?] = [
-        "edit.undo", "edit.redo", nil, "edit.cut", "edit.copy", "edit.paste", "edit.selectAll", nil,
+        "edit.undo", "edit.redo", nil, "edit.cut", "edit.copy", "edit.paste", "edit.pasteAndMatchStyle", "edit.selectAll", nil,
         "page.find", "page.findNext", "page.findPrevious", nil,
         "find.regex", "find.caseSensitive", "find.wholeWord",
     ]
@@ -29,7 +29,7 @@ enum MenuLayout {
         "nav.back", "nav.forward", "nav.reload", "nav.hardReload", "nav.stop", "nav.home", nil,
         "@apps", nil,
         "nav.nextTab", "nav.previousTab", nil,
-        "assistants.toggle", "@assistants", nil,
+        "assistants.toggle", "@assistants", "terminal.theme", nil,
         "page.zoomIn", "page.zoomOut", "page.zoomReset", nil,
         "ai.copy", "ai.save", "ai.send", nil,
         "window.fullScreen",
@@ -72,6 +72,10 @@ enum BuiltInCommands {
             return window.targetAssistant != nil
         }
 
+        // Also on the terminal's right-click menu, which a program in the terminal can take over for its own clicks.
+        var terminalTheme = command("terminal.theme", "Terminal Theme\u{2026}", "Assistants", run { window.chooseTerminalTheme() })
+        terminalTheme.validate = { _ in window.hasTerminal }
+
         var close = command("window.close", "Close", "Window", key: "Cmd+W", fixed: true, run(app.closeTabOrWindow))
         close.validate = { item in
             item.title = app.closeTitle()
@@ -94,6 +98,10 @@ enum BuiltInCommands {
             command("edit.cut", "Cut", "Edit", key: "Cmd+X", fixed: true, .responder(#selector(NSText.cut(_:)))),
             command("edit.copy", "Copy", "Edit", key: "Cmd+C", fixed: true, .responder(#selector(NSText.copy(_:)))),
             command("edit.paste", "Paste", "Edit", key: "Cmd+V", fixed: true, .responder(#selector(NSText.paste(_:)))),
+            // Pastes the clipboard's plain text, without fonts, colors or links. Web views and text fields both handle
+            // it. Not fixed, so it can be moved to Cmd+Shift+V, which many web apps use for the same thing.
+            command("edit.pasteAndMatchStyle", "Paste and Match Style", "Edit", key: "Cmd+Alt+Shift+V",
+                    .responder(#selector(NSTextView.pasteAsPlainText(_:)))),
             command("edit.selectAll", "Select All", "Edit", key: "Cmd+A", fixed: true, .responder(#selector(NSText.selectAll(_:)))),
 
             // Navigation
@@ -117,11 +125,13 @@ enum BuiltInCommands {
             command("page.zoomOut", "Zoom Out", "Page", key: "Cmd+-", run { window.zoom(.smaller) }),
             command("page.zoomReset", "Actual Size", "Page", key: "Cmd+0", run { window.zoom(.reset) }),
             command("page.print", "Print\u{2026}", "Page", key: "Cmd+P", run { window.printPage() }),
-            command("page.copyAddress", "Copy Page Address", "Page", key: "Cmd+Shift+L", run { window.copyPageAddress() }),
+            command("page.copyAddress", "Copy Link", "Page", key: "Cmd+Shift+L", run { window.copyPageAddress() }),
+            command("page.copyLinkWithTitle", "Copy Link with Title", "Page", run { window.copyPageAddress(withTitle: true) }),
             command("page.openInBrowser", "Open in Default Browser", "Page", key: "Cmd+Shift+O", run { window.openInBrowser() }),
 
             // Assistants and AI
             command("assistants.toggle", "Toggle Assistants", "Assistants", key: "Cmd+Alt+0", run { window.toggleAssistants(nil) }),
+            terminalTheme,
             command("ai.copy", "Copy Page for AI", "AI", key: "Cmd+Shift+C", run { window.copySnapshot(nil) }),
             command("ai.save", "Save Page for AI\u{2026}", "AI", key: "Cmd+Shift+S", run { window.saveSnapshot(nil) }),
             send,

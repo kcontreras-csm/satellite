@@ -291,6 +291,8 @@ final class ShortcutRegistry: NSObject, ObservableObject {
     @MainActor @discardableResult
     func handle(_ event: NSEvent) -> Bool {
         guard NSApp.modalWindow == nil, let pressed = try? KeyCombo(event: event) else { return false }
+        // A focused terminal keeps every key without Cmd (Ctrl+R, Ctrl+A...): those belong to the program in it.
+        if !pressed.modifiers.contains(.command), NSApp.keyWindow?.firstResponder is SatelliteTerminalView { return false }
         var candidates = [pressed]
         // "+" is typed as Shift+"=", so Cmd+Shift+= also means the shortcut written Cmd+=.
         if pressed.key == "=", pressed.modifiers.contains(.shift),

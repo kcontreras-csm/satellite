@@ -86,6 +86,8 @@ final class TabGroup {
 final class TabButton: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
+    /// The right-click menu, made when it opens so it describes the page the tab shows now.
+    var makeMenu: (() -> NSMenu?)?
 
     private let label = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
@@ -147,6 +149,10 @@ final class TabButton: NSView {
         onSelect?()
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        makeMenu?() ?? super.menu(for: event)
+    }
+
     @objc private func closeClicked() { onClose?() }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -166,6 +172,8 @@ final class TabButton: NSView {
 final class TabBarView: NSView {
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
+    /// The right-click menu of the tab at an index.
+    var menuForTab: ((Int) -> NSMenu?)?
 
     private let stack = NSStackView()
     private var buttons: [TabButton] = []
@@ -203,6 +211,7 @@ final class TabBarView: NSView {
             let button = TabButton(title: title, selected: index == selected, closable: index > 0)
             button.onSelect = { [weak self] in self?.onSelect?(index) }
             button.onClose = { [weak self] in self?.onClose?(index) }
+            button.makeMenu = { [weak self] in self?.menuForTab?(index) }
             return button
         }
         buttons.forEach(stack.addArrangedSubview)

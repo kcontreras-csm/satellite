@@ -11,6 +11,8 @@ final class ContentViewController: NSViewController {
     private var titleObserver: NSObjectProtocol?
 
     var selectedGroup: TabGroup? { selectedID.flatMap { groups[$0] } }
+    /// Where the tab and app menus copy links to.
+    var linkPasteboard: NSPasteboard = .general
     /// The page in front: the selected app's current tab.
     var selectedPane: WebPane? { selectedGroup?.current }
     var hasClosableTab: Bool { selectedGroup?.hasClosableTab ?? false }
@@ -42,6 +44,7 @@ final class ContentViewController: NSViewController {
 
         tabBar.onSelect = { [weak self] in self?.selectedGroup?.select($0) }
         tabBar.onClose = { [weak self] in self?.selectedGroup?.close(at: $0) }
+        tabBar.menuForTab = { [weak self] in self?.tabMenu(at: $0) }
         titleObserver = NotificationCenter.default.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let group = self?.selectedGroup, group.tabs.count > 1 else { return }
@@ -80,6 +83,22 @@ final class ContentViewController: NSViewController {
         show(group)
     }
 
+    /// Right-click on a tab: its link, then Close Tab for the ones that can close.
+    private func tabMenu(at index: Int) -> NSMenu? {
+        guard let group = selectedGroup, group.tabs.indices.contains(index) else { return nil }
+        var extra: [NSMenuItem] = []
+        if index > 0 {
+            extra.append(ClosureMenuItem(title: "Close Tab") { [weak group] in group?.close(at: index) })
+        }
+        return PageLink.menu(for: group.tabs[index], window: view.window, extra: extra, pasteboard: linkPasteboard)
+    }
+
+    /// Right-click on an app in the rail: the link of the tab it shows (its own page, or another tab it opened).
+    func appMenu(for id: String) -> NSMenu? {
+        guard let group = groups[id] else { return nil }
+        return PageLink.menu(for: group.current, window: view.window, pasteboard: linkPasteboard)
+    }
+
     func nextTab() { selectedGroup?.selectNext() }
     func previousTab() { selectedGroup?.selectPrevious() }
     @discardableResult func closeCurrentTab() -> Bool { selectedGroup?.closeCurrent() ?? false }
@@ -114,16 +133,22 @@ final class ContentViewController: NSViewController {
     }
 }
 
-/// Right panel: a segmented switcher over lazily loaded assistant web views.
+/// Right panel: a segmented switcher over the assistants, each a web view or a terminal, all loaded up front.
 final class AssistantsViewController: NSViewController {
     private var panes: [String: WebPane] = [:]
+    private var terminals: [String: TerminalPane] = [:]
     private var items: [SidebarItem] = []
     private(set) var selectedID: String?
     private let segmented = NSSegmentedControl()
     private let container = NSView()
     private var isLoaded = false
 
+    /// The selected assistant when it is a web page; nil when it is a terminal.
     var selectedPane: WebPane? { selectedID.flatMap { panes[$0] } }
+    /// The selected assistant when it is a terminal.
+    var selectedTerminal: TerminalPane? { selectedID.flatMap { terminals[$0] } }
+    /// The first terminal in the panel's order, if there is one.
+    var firstTerminalID: String? { items.first { terminals[$0.id] != nil }?.id }
 
     override func loadView() {
         let root = NSView()
@@ -156,11 +181,21 @@ final class AssistantsViewController: NSViewController {
 
     func setItems(_ newItems: [SidebarItem]) {
         let ids = Set(newItems.map(\.id))
-        for id in panes.keys where !ids.contains(id) {
+        let terminalIDs = Set(newItems.filter { $0.terminal != nil }.map(\.id))
+        for id in panes.keys where !ids.contains(id) || terminalIDs.contains(id) {
             panes.removeValue(forKey: id)?.teardown()
         }
+        for id in terminals.keys where !terminalIDs.contains(id) {
+            terminals.removeValue(forKey: id)?.teardown()
+        }
         for item in newItems {
-            if let pane = panes[item.id] {
+            if let config = item.terminal {
+                if let terminal = terminals[item.id] {
+                    terminal.update(name: item.name, config: config)
+                } else {
+                    terminals[item.id] = TerminalPane(id: item.id, name: item.name, config: config)
+                }
+            } else if let pane = panes[item.id] {
                 pane.update(name: item.name, url: item.url)
             } else {
                 let pane = WebPane(name: item.name, url: item.url)
@@ -175,37 +210,50 @@ final class AssistantsViewController: NSViewController {
         if let selectedID { select(selectedID) }
     }
 
-    private func attach(_ pane: WebPane) {
-        guard pane.webView.superview == nil else { return }
-        container.addSubview(pane.webView)
+    private func attach(_ content: NSView) {
+        guard content.superview == nil else { return }
+        content.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(content)
         NSLayoutConstraint.activate([
-            pane.webView.topAnchor.constraint(equalTo: container.topAnchor),
-            pane.webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            pane.webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            pane.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
     }
 
     /// Loads every assistant up front — so each is signed in and ready, and its content scripts run immediately
-    /// (e.g. the Slackbot panel's), not just the one in view. Only the selected assistant is shown; the rest load
-    /// behind it.
+    /// (e.g. the Slackbot panel's), not just the one in view. Terminals start their shell. Only the selected assistant
+    /// is shown; the rest load behind it.
     func preloadAll() {
         isLoaded = true
         for (id, pane) in panes {
-            attach(pane)
+            attach(pane.webView)
             pane.loadIfNeeded()
             pane.webView.isHidden = (id != selectedID)
+        }
+        for (id, terminal) in terminals {
+            attach(terminal.host)
+            terminal.startIfNeeded()
+            terminal.host.isHidden = (id != selectedID)
         }
     }
 
     func select(_ id: String) {
-        guard items.contains(where: { $0.id == id }), let pane = panes[id] else { return }
+        guard items.contains(where: { $0.id == id }) else { return }
         selectedID = id
         refreshSegments()
-        attach(pane)
         for (otherID, other) in panes where other.didCreateView { other.webView.isHidden = (otherID != id) }
-        pane.loadIfNeeded()
-        view.window?.makeFirstResponder(pane.webView)
+        for (otherID, other) in terminals { other.host.isHidden = (otherID != id) }
+        if let pane = panes[id] {
+            attach(pane.webView)
+            pane.loadIfNeeded()
+            view.window?.makeFirstResponder(pane.webView)
+        } else if let terminal = terminals[id] {
+            attach(terminal.host)
+            terminal.startIfNeeded()
+            view.window?.makeFirstResponder(terminal.view)
+        }
     }
 
     func reloadAll() {

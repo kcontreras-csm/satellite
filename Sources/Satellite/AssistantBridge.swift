@@ -241,6 +241,12 @@ final class AssistantTrust: ObservableObject {
 
 // MARK: - Sending
 
+/// Where sent text goes: an assistant's web page, or a terminal in the side panel.
+enum AssistantDestination {
+    case page(WebPane)
+    case terminal(TerminalPane)
+}
+
 /// Sends what is on a page (the selection, or the whole page) to an assistant in the side panel: it asks first
 /// unless the assistant is trusted, opens the assistant, waits for its message box and puts the text there. It
 /// never sends the message; the user reads it and presses Return. If the text can't be put there, it goes to the
@@ -274,7 +280,7 @@ final class AssistantSender {
     /// sends nothing (that is "Ask About This"); otherwise the whole page goes when nothing is selected.
     @discardableResult
     func send(from source: WebPane, to assistant: SidebarItem, selectionOnly: Bool, window: NSWindow?,
-              open: (String) -> WebPane?) async -> Outcome {
+              open: (String) -> AssistantDestination?) async -> Outcome {
         guard !isSending else { return .cancelled }
         isSending = true
         defer { isSending = false }
@@ -314,8 +320,25 @@ final class AssistantSender {
             }
         }
 
-        guard let target = open(assistant.id) else {
+        let what = kind == .page ? "the page (\(ByteCountFormatter.string(fromByteCount: Int64(payload.text.utf8.count), countStyle: .file)))" : "the selection"
+        let target: WebPane
+        switch open(assistant.id) {
+        case nil:
             return copy(payload, assistant: assistant.name, reason: "it couldn\u{2019}t be opened", window: window)
+        case .terminal(let terminal)?:
+            terminal.view.window?.makeFirstResponder(terminal.view)
+            switch terminal.paste(payload.text) {
+            case .pasted:
+                toast("Pasted \(what) into \(assistant.name). Check it, then press Return.", window, 4)
+                return .inserted(kind)
+            case .notRunning:
+                return copy(payload, assistant: assistant.name, reason: "its session has ended (press Return there to start a new one)", window: window, toTerminal: true)
+            case .unsafe:
+                // Without bracketed paste every line break would act as Return and run the text as commands.
+                return copy(payload, assistant: assistant.name, reason: "the program running in it doesn\u{2019}t accept a safe paste, so its lines could run as commands", window: window, toTerminal: true)
+            }
+        case .page(let pane)?:
+            target = pane
         }
         toast("Opening \(assistant.name)\u{2026}", window, nil)
         let deadline = Date().addingTimeInterval(waitLimit)
@@ -337,15 +360,16 @@ final class AssistantSender {
         guard result.inserted else {
             return copy(payload, assistant: assistant.name, reason: result.reason ?? "its message box didn\u{2019}t accept the text", window: window)
         }
-        let what = kind == .page ? "the page (\(ByteCountFormatter.string(fromByteCount: Int64(payload.text.utf8.count), countStyle: .file)))" : "the selection"
         toast("Added \(what) to \(assistant.name)\u{2019}s message box. Check it, then press Return to send.", window, 4)
         return .inserted(kind)
     }
 
-    private func copy(_ payload: AssistantPayload, assistant: String, reason: String, window: NSWindow?) -> Outcome {
+    private func copy(_ payload: AssistantPayload, assistant: String, reason: String, window: NSWindow?, toTerminal: Bool = false) -> Outcome {
         pasteboard.clearContents()
         pasteboard.setString(payload.text, forType: .string)
-        toast("\(assistant): \(reason). It\u{2019}s on the clipboard: click the message box and press \u{2318}V.", window, 6)
+        // Pasting it into that terminal by hand would hit the same problem, so a terminal gets no "press ⌘V" hint.
+        let hint = toTerminal ? "It\u{2019}s on the clipboard." : "It\u{2019}s on the clipboard: click the message box and press \u{2318}V."
+        toast("\(assistant): \(reason). \(hint)", window, 6)
         return .copied(reason: reason)
     }
 

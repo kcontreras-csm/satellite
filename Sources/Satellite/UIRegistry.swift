@@ -18,6 +18,8 @@ struct SidebarItem: Equatable, Identifiable {
     var owner: String?
     /// Links that ask for a new window open as tabs inside this app (see `WebApp.tabs`).
     var opensLinksInTabs = false
+    /// Set for a terminal assistant. Only config.json sets it (below): items extensions add or patch never have it.
+    private(set) var terminal: TerminalConfig?
 
     init(_ app: WebApp) {
         opensLinksInTabs = app.tabs ?? false
@@ -25,6 +27,7 @@ struct SidebarItem: Equatable, Identifiable {
         name = app.name
         url = app.url
         symbol = app.symbol
+        terminal = app.terminal
     }
 
     init(id: String, name: String, url: URL, symbol: String, badge: String?, owner: String) {

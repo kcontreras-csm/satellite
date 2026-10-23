@@ -159,7 +159,8 @@ struct AppsSettings: View {
     private struct Target: Identifiable {
         let section: SidebarSection
         let app: WebApp?
-        var id: String { section.rawValue + ":" + (app?.id ?? "new") }
+        var newTerminal = false
+        var id: String { section.rawValue + ":" + (app?.id ?? (newTerminal ? "new-terminal" : "new")) }
     }
 
     @State private var editing: Target?
@@ -181,6 +182,7 @@ struct AppsSettings: View {
                 Menu("Add") {
                     Button("New App\u{2026}") { editing = Target(section: .apps, app: nil) }
                     Button("New Assistant\u{2026}") { editing = Target(section: .assistants, app: nil) }
+                    Button("New Terminal\u{2026}") { editing = Target(section: .assistants, app: nil, newTerminal: true) }
                     ForEach([SidebarSection.apps, .assistants], id: \.self) { section in
                         let missing = model.missingBuiltIns(section)
                         if !missing.isEmpty {
@@ -199,7 +201,7 @@ struct AppsSettings: View {
             }
         }
         .sheet(item: $editing) { target in
-            AppEditor(section: target.section, original: target.app, model: model)
+            AppEditor(section: target.section, original: target.app, model: model, isTerminal: target.app?.isTerminal ?? target.newTerminal)
         }
         .confirmationDialog(
             "Remove \u{201C}\(removing?.app?.name ?? "")\u{201D}?",
@@ -210,7 +212,7 @@ struct AppsSettings: View {
                 if let app = target.app { model.remove(target.section, id: app.id) }
             }
         } message: { _ in
-            Text("It leaves the sidebar. Your sign-in to the site is kept, and you can add it back.")
+            Text(removing?.app?.isTerminal == true ? "It leaves the panel and its session ends. You can add it back." : "It leaves the sidebar. Your sign-in to the site is kept, and you can add it back.")
         }
         .confirmationDialog("Reset apps and assistants to the defaults?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { model.resetToDefaults() }
@@ -270,7 +272,7 @@ private struct AppRow: View {
                         if model.isEdited(section, app) { Tag(text: "Edited") }
                         if app.tabs == true { Tag(text: "Links in tabs") }
                     }
-                    Text(app.url.absoluteString)
+                    Text(app.terminal.map(Self.describe) ?? app.url.absoluteString)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
@@ -295,6 +297,18 @@ private struct AppRow: View {
     }
 }
 
+extension AppRow {
+    static func describe(_ terminal: TerminalConfig) -> String {
+        let command = terminal.command?.trimmingCharacters(in: .whitespaces).nonEmpty ?? "Login shell"
+        let what = terminal.directory?.trimmingCharacters(in: .whitespaces).nonEmpty.map { "\(command) in \($0)" } ?? command
+        return TerminalTheme.named(terminal.theme).map { "\(what) \u{00B7} \($0.name)" } ?? what
+    }
+}
+
+extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
 /// An SF Symbol, or a globe when the name isn't one (as the sidebar does).
 struct SymbolImage: View {
     let name: String
@@ -312,26 +326,40 @@ struct AppEditor: View {
     let section: SidebarSection
     let original: WebApp?
     let model: AppsModel
+    /// Edits a terminal: what it runs and where, instead of an address.
+    let isTerminal: Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var address: String
     @State private var symbol: String
     @State private var opensLinksInTabs: Bool
+    @State private var command: String
+    @State private var directory: String
+    /// The Gogh theme by name; nil is System.
+    @State private var theme: String?
+    @State private var choosingTheme = false
+    /// Characters of room around the text.
+    @State private var padding: Double
     @State private var error: String?
     @State private var choosingSymbol = false
 
-    init(section: SidebarSection, original: WebApp?, model: AppsModel) {
+    init(section: SidebarSection, original: WebApp?, model: AppsModel, isTerminal: Bool = false) {
         self.section = section
         self.original = original
         self.model = model
-        _name = State(initialValue: original?.name ?? "")
+        self.isTerminal = isTerminal
+        _name = State(initialValue: original?.name ?? (isTerminal ? "Terminal" : ""))
         _address = State(initialValue: original?.url.absoluteString ?? "")
-        _symbol = State(initialValue: original?.symbol ?? "globe")
+        _symbol = State(initialValue: original?.symbol ?? (isTerminal ? "terminal" : "globe"))
         _opensLinksInTabs = State(initialValue: original?.tabs ?? false)
+        _command = State(initialValue: original?.terminal?.command ?? "")
+        _directory = State(initialValue: original?.terminal?.directory ?? "")
+        _theme = State(initialValue: TerminalTheme.named(original?.terminal?.theme)?.name)   // an unknown name is System
+        _padding = State(initialValue: original?.terminal?.effectivePadding ?? 0)
     }
 
-    private var noun: String { section == .apps ? "App" : "Assistant" }
+    private var noun: String { isTerminal ? "Terminal" : section == .apps ? "App" : "Assistant" }
     private var builtIn: WebApp? { original.flatMap { model.builtIn(section, id: $0.id) } }
     private var symbolIsKnown: Bool { NSImage(systemSymbolName: symbol.trimmingCharacters(in: .whitespaces), accessibilityDescription: nil) != nil }
 
@@ -341,8 +369,35 @@ struct AppEditor: View {
                 LabeledContent("Name") {
                     TextField("", text: $name, prompt: Text("Cases")).textFieldStyle(.roundedBorder)
                 }
-                LabeledContent("Address") {
-                    TextField("", text: $address, prompt: Text(verbatim: "https://example.com/")).textFieldStyle(.roundedBorder)
+                if isTerminal {
+                    LabeledContent("Command") {
+                        TextField("", text: $command, prompt: Text(verbatim: "Leave empty for your login shell, or e.g. claude")).textFieldStyle(.roundedBorder)
+                    }
+                    LabeledContent("Start in") {
+                        TextField("", text: $directory, prompt: Text(verbatim: "~")).textFieldStyle(.roundedBorder)
+                    }
+                    LabeledContent("Theme") {
+                        HStack(spacing: 8) {
+                            ThemeSwatch(theme: TerminalTheme.named(theme))
+                            Text(theme ?? "System")
+                            Spacer()
+                            Button("Choose\u{2026}") { choosingTheme = true }
+                                .popover(isPresented: $choosingTheme, arrowEdge: .trailing) {
+                                    TerminalThemePicker(original: theme, preview: { theme = $0?.name }, done: { choosingTheme = false })
+                                }
+                        }
+                    }
+                    LabeledContent("Padding") {
+                        Stepper(value: $padding, in: TerminalConfig.paddingRange, step: 0.5) {
+                            Text(Self.describePadding(padding)).monospacedDigit()
+                        }
+                    }
+                    Text("It runs in your login shell, so your PATH and profile apply; when a command exits, the shell stays open. Padding is room around the text, counted in characters, so it grows with the text size. A new theme or padding shows when you save; a new command or folder applies the next time the session starts. The terminal\u{2019}s right-click menu changes the theme too.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Address") {
+                        TextField("", text: $address, prompt: Text(verbatim: "https://example.com/")).textFieldStyle(.roundedBorder)
+                    }
                 }
                 LabeledContent("Icon") {
                     HStack(spacing: 8) {
@@ -356,7 +411,7 @@ struct AppEditor: View {
                 if !symbolIsKnown {
                     Text("That isn\u{2019}t an SF Symbol name, so a globe is shown.").font(.caption).foregroundStyle(.orange)
                 }
-                if section == .apps {
+                if section == .apps && !isTerminal {
                     Toggle("Open links in new tabs", isOn: $opensLinksInTabs)
                     Text("Links that ask for a new window stay in this app as tabs, even links to other sites. Meant for launchers such as Okta, where each tile opens a different application.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -382,8 +437,17 @@ struct AppEditor: View {
 
     /// What the fields hold now, when it is valid.
     private var currentValue: WebApp? {
-        guard let original, let url = try? AppsModel.address(from: address), let name = try? AppsModel.name(from: name) else { return nil }
+        guard let original, let name = try? AppsModel.name(from: name) else { return nil }
+        if isTerminal { return WebApp.makeTerminal(id: original.id, name: name, symbol: symbol.trimmingCharacters(in: .whitespaces), config: terminalConfig) }
+        guard let url = try? AppsModel.address(from: address) else { return nil }
         return WebApp(id: original.id, name: name, url: url, symbol: symbol.trimmingCharacters(in: .whitespaces), tabs: section == .apps && opensLinksInTabs ? true : nil)
+    }
+
+    private var terminalConfig: TerminalConfig {
+        TerminalConfig(command: command.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty,
+                       directory: directory.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty,
+                       theme: theme,
+                       padding: padding > 0 ? padding : nil)
     }
 
     private func apply(_ app: WebApp) {
@@ -391,17 +455,32 @@ struct AppEditor: View {
         address = app.url.absoluteString
         symbol = app.symbol
         opensLinksInTabs = app.tabs ?? false
+        command = app.terminal?.command ?? ""
+        directory = app.terminal?.directory ?? ""
+        theme = TerminalTheme.named(app.terminal?.theme)?.name
+        padding = app.terminal?.effectivePadding ?? 0
         error = nil
+    }
+
+    static func describePadding(_ value: Double) -> String {
+        if value == 0 { return "None" }
+        let number = value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
+        return value == 1 ? "1 character" : "\(number) characters"
     }
 
     private func save() {
         do {
             let checkedName = try AppsModel.name(from: name)
-            let url = try AppsModel.address(from: address)
             let checkedSymbol = symbol.trimmingCharacters(in: .whitespaces)
-            let app = WebApp(
-                id: original?.id ?? model.uniqueID(for: checkedName, in: section), name: checkedName, url: url,
-                symbol: checkedSymbol.isEmpty ? "globe" : checkedSymbol, tabs: section == .apps && opensLinksInTabs ? true : nil)
+            let id = original?.id ?? model.uniqueID(for: checkedName, in: section)
+            let app: WebApp
+            if isTerminal {
+                app = WebApp.makeTerminal(id: id, name: checkedName, symbol: checkedSymbol.isEmpty ? "terminal" : checkedSymbol, config: terminalConfig)
+            } else {
+                app = WebApp(
+                    id: id, name: checkedName, url: try AppsModel.address(from: address),
+                    symbol: checkedSymbol.isEmpty ? "globe" : checkedSymbol, tabs: section == .apps && opensLinksInTabs ? true : nil)
+            }
             model.save(app, in: section)
             dismiss()
         } catch {
