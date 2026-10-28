@@ -1,9 +1,27 @@
 import AppKit
 import WebKit
 
+/// One page open in Satellite — an app's tab, or a web assistant — for the local MCP server to list and read.
+struct OpenPage {
+    let pane: WebPane
+    /// The app's or assistant's name and id.
+    let owner: String
+    let ownerID: String
+    let isAssistant: Bool
+    /// The tab its app shows (an assistant has only the one).
+    let isCurrentTab: Bool
+    /// The tab group it's in, if any.
+    let group: String?
+    /// Whether it has ever loaded. An app that was never opened has no page yet, and listing or reading it
+    /// mustn't load it (that could start a sign-in).
+    var isLoaded: Bool { pane.didCreateView && pane.webView.url != nil }
+}
+
 /// Center area: one lazily loaded group of tabs per app, only the selected app's current tab visible.
 final class ContentViewController: NSViewController {
     private var groups: [String: TabGroup] = [:]
+    /// The apps' ids in rail order.
+    private var order: [String] = []
     private(set) var selectedID: String?
     private let tabBar = TabBarView()
     private let container = NSView()
@@ -38,23 +56,18 @@ final class ContentViewController: NSViewController {
         return entries.sorted { $0.appName == $1.appName ? $0.cluster.name < $1.cluster.name : $0.appName < $1.appName }
     }
 
-    /// The current tab of the app matched by id (exact) or name (case-insensitive) — for the local MCP server to
-    /// read a page without needing that app to be the one shown now. A background page's web view keeps running
-    /// and can be read or snapshotted the same as the front one; it just isn't what the window displays.
-    func pane(matching identifier: String) -> WebPane? {
-        (groups[identifier] ?? groups.values.first { $0.home.name.localizedCaseInsensitiveCompare(identifier) == .orderedSame })?.current
-    }
-
-    /// Every app, with its current tab's title and address if it's been opened at least once — for the MCP
-    /// server's `list_open_pages`, so an agent can see what `app` identifiers are available to read.
-    var allAppsSummary: [(id: String, name: String, title: String?, url: String?)] {
-        var entries: [(id: String, name: String, title: String?, url: String?)] = []
-        for (id, group) in groups {
-            let pane = group.current
-            let loaded = pane.didCreateView && pane.webView.url != nil
-            entries.append((id: id, name: group.home.name, title: loaded ? pane.tabTitle : nil, url: loaded ? pane.webView.url?.absoluteString : nil))
+    /// Every tab of every app, apps in rail order and tabs in tab-bar order. Background tabs keep running and can
+    /// be read the same as the one in front; they just aren't what the window shows.
+    var openPages: [OpenPage] {
+        var pages: [OpenPage] = []
+        for id in order {
+            guard let group = groups[id] else { continue }
+            for (index, pane) in group.tabs.enumerated() {
+                pages.append(OpenPage(pane: pane, owner: group.home.name, ownerID: id, isAssistant: false,
+                                      isCurrentTab: index == group.selectedIndex, group: group.cluster(at: index)?.name))
+            }
         }
-        return entries.sorted { $0.name < $1.name }
+        return pages
     }
 
     /// Switches to `appID` and brings `clusterID`'s tabs to the front: expands it if collapsed, and selects its
@@ -108,6 +121,7 @@ final class ContentViewController: NSViewController {
     /// and address changes. If the selected item disappeared nothing is selected until `select` is called.
     func setItems(_ items: [SidebarItem]) {
         let ids = Set(items.map(\.id))
+        order = items.map(\.id)
         for id in groups.keys where !ids.contains(id) {
             groups.removeValue(forKey: id)?.teardown()
         }
@@ -282,6 +296,13 @@ final class AssistantsViewController: NSViewController {
     var selectedTerminal: TerminalPane? { selectedID.flatMap { terminals[$0] } }
     /// The first terminal in the panel's order, if there is one.
     var firstTerminalID: String? { items.first { terminals[$0.id] != nil }?.id }
+
+    /// The web assistants, in panel order. Terminals aren't pages, so they aren't here.
+    var openPages: [OpenPage] {
+        items.compactMap { item in
+            panes[item.id].map { OpenPage(pane: $0, owner: item.name, ownerID: item.id, isAssistant: true, isCurrentTab: true, group: nil) }
+        }
+    }
 
     override func loadView() {
         let root = NSView()

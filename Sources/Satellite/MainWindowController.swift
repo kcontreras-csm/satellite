@@ -12,31 +12,119 @@ extension NSToolbarItem.Identifier {
     static let snapshot = NSToolbarItem.Identifier("satellite.snapshot")
 }
 
-/// Settings > General's "Allow editing the address bar", off by default: Satellite's apps are configured
-/// destinations, not a general browser, so typing a new address is an extra capability the user opts into.
-enum AddressBarDefaults {
-    static let editable = "addressBarEditable"
-}
-
-/// A Safari-like address field: the same rounded, iconed search-field look, centered in the toolbar with room
-/// around it. Shows the current page's address, selects it all on click so it's one Cmd+C away, and (only once
-/// Settings > General's toggle allows it) can be typed into to navigate. `NSSearchField` is just for that look —
-/// it's still an `NSTextField` underneath, so the usual text field delegate methods still apply unchanged.
-final class AddressBarField: NSSearchField {
+/// The text inside the address bar: shows the current page's address, selects it all on click so it's one Cmd+C
+/// away, and (only once Settings > General's toggle allows it) can be typed into to navigate.
+final class AddressBarField: NSTextField {
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         if !isEditable { currentEditor()?.selectAll(nil) }
     }
+
+    // The ring follows focus itself; controlTextDidBeginEditing only arrives with the first keystroke.
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became, isEditable { (superview as? AddressBar)?.isFocused = true }
+        return became
+    }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        (superview as? AddressBar)?.isFocused = false
+    }
 }
 
-final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSSearchFieldDelegate {
+/// Safari's address bar look: a filled, rounded pill with a leading icon around a borderless field. Not an
+/// `NSSearchField`, whose clear button would wipe the address in read-only mode and whose bezel barely shows in
+/// a dark toolbar. Long addresses truncate inside the pill instead of widening it into the buttons next to it.
+final class AddressBar: NSView {
+    let field = AddressBarField()
+    private let icon = NSImageView()
+    private lazy var width = widthAnchor.constraint(equalToConstant: 640)
+    var isFocused = false { didSet { needsDisplay = true } }
+
+    static let minWidth: CGFloat = 240
+    static let maxWidth: CGFloat = 720
+    /// macOS 26's toolbar buttons are 34pt capsules; earlier ones are shorter and squarer.
+    private static let height: CGFloat = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)) ? 34 : 28
+
+    /// Takes as much of `available` as it may, within its minimum and maximum width.
+    func fit(width available: CGFloat) {
+        let target = min(max(available.rounded(.down), Self.minWidth), Self.maxWidth)
+        if width.constant != target { width.constant = target }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        translatesAutoresizingMaskIntoConstraints = false
+
+        icon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+        icon.contentTintColor = .secondaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13)
+        field.lineBreakMode = .byTruncatingTail
+        field.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        addSubview(icon)
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Self.height),
+            width,
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            field.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        guard let layer else { return }
+        layer.cornerRadius = Self.height / 2   // a capsule, like the toolbar buttons beside it
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer.backgroundColor = NSColor.labelColor.withAlphaComponent(0.09).cgColor
+            layer.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.8).cgColor
+        }
+        layer.borderWidth = isFocused ? 2 : 0
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    /// A click on the padding or the icon works like a click on the text.
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+}
+
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSTextFieldDelegate {
     private let registry = UIRegistry.shared
     private let railVC = RailViewController()
     private let contentVC = ContentViewController()
     private let assistantsVC = AssistantsViewController()
     private let assistantsItem: NSSplitViewItem
     private var observers: [NSObjectProtocol] = []
-    private let addressField = AddressBarField()
+    private let addressBar = AddressBar()
+    private var addressField: AddressBarField { addressBar.field }
     private var isEditingAddress = false
     /// True while a New Tab's blank address field is editable only because of that (the setting itself is off);
     /// cleared, and the field re-locked, once that one address is committed or cancelled.
@@ -78,31 +166,24 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         let toolbar = NSToolbar(identifier: "SatelliteToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
+        // Centered in the window, as Safari does, rather than wherever the items before it happen to end.
+        toolbar.centeredItemIdentifiers = [.addressBar]
         window.toolbar = toolbar
+        // The title would take the toolbar's leading space and push the bar off center; the rail already shows
+        // which app is in front, and the Window menu and Mission Control still use the title.
+        window.titleVisibility = .hidden
 
-        addressField.font = .systemFont(ofSize: 12.5)
-        addressField.lineBreakMode = .byTruncatingTail
         addressField.placeholderString = "Address"
-        addressField.alignment = .left
-        addressField.focusRingType = .default
         addressField.isSelectable = true   // copyable even while read-only
         addressField.delegate = self
-        addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
-        addressField.toolTip = "The address of the page in front. Copy it with \u{2318}C; editing is off in Settings > General."
-        addressField.translatesAutoresizingMaskIntoConstraints = false
-        let addressWidth = addressField.widthAnchor.constraint(equalToConstant: 560)
-        addressWidth.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-            addressField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
-            addressWidth,
-            addressField.heightAnchor.constraint(equalToConstant: 24),
-        ])
+        applyAddressEditability()
 
         railVC.onSelect = { [weak self] in self?.selectApp($0) }
         railVC.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
         railVC.onOpenSettings = openSettings
         railVC.onOpenGroups = { [weak self] in self?.showGroupsBrowser() }
 
+        contentVC.view.postsFrameChangedNotifications = true
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
@@ -111,6 +192,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             },
             center.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
                 self?.applyItems()
+            },
+            center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+                self?.fitAddressBar()
+            },
+            // Showing, hiding or dragging the assistants panel changes the page column the bar is centered on. The
+            // split view's own resize notification arrives before the column has its new frame; this doesn't.
+            center.addObserver(forName: NSView.frameDidChangeNotification, object: contentVC.view, queue: .main) { [weak self] _ in
+                self?.fitAddressBar()
             },
             center.addObserver(forName: .extensionsHotReloaded, object: nil, queue: .main) { [weak self] note in
                 guard let text = note.userInfo?["message"] as? String else { return }
@@ -160,6 +249,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         if let current = contentVC.selectedID, let item = apps.first(where: { $0.id == current }) {
             railVC.setSelected(current)
             window?.title = item.name
+            applyAddressEditability()   // its "Allow editing the address bar" may have just changed in Settings
         } else {
             let saved = UserDefaults.standard.string(forKey: "lastSelectedAppID")
             selectApp(apps.first { $0.id == saved }?.id ?? apps.first?.id)
@@ -173,6 +263,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         window?.title = item.name
         UserDefaults.standard.set(id, forKey: "lastSelectedAppID")
         window?.toolbar?.validateVisibleItems()
+        applyAddressEditability()
     }
 
     func showAssistant(_ id: String) {
@@ -380,11 +471,20 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// what Satellite's local MCP server (`MCPBridge`) shares with an agent that asks to read "the website".
     var currentWebsitePane: WebPane? { contentVC.selectedPane }
 
-    /// Any app's current tab, by id or name — so `MCPBridge` can read a page without switching to it first.
-    func websitePane(matching identifier: String) -> WebPane? { contentVC.pane(matching: identifier) }
+    /// Every page open in Satellite: each app's tabs (rail order), then the web assistants (panel order).
+    func openPages() -> [OpenPage] { contentVC.openPages + assistantsVC.openPages }
 
-    /// Every app with what it's showing, for `MCPBridge`'s `list_open_pages`.
-    func allWebsiteApps() -> [(id: String, name: String, title: String?, url: String?)] { contentVC.allAppsSummary }
+    /// The page with this `pageID`, whichever app or assistant it's in.
+    func page(withID id: String) -> OpenPage? {
+        openPages().first { $0.pane.pageID == id.lowercased() }
+    }
+
+    /// The current tab of the app or web assistant with this id or name (case-insensitive).
+    func currentPage(ofApp identifier: String) -> OpenPage? {
+        openPages().first {
+            $0.isCurrentTab && ($0.ownerID == identifier || $0.owner.localizedCaseInsensitiveCompare(identifier) == .orderedSame)
+        }
+    }
 
     var hasTerminal: Bool { assistantsVC.firstTerminalID != nil }
 
@@ -405,9 +505,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // A flexible space on each side of the address bar centers it in the window, Safari-style, with room
-        // around it rather than sitting flush against the surrounding buttons.
-        [.back, .forward, .flexibleSpace, .addressBar, .reload, .flexibleSpace, .newTab, .snapshot, .toggleAssistants]
+        // Navigation leading, the address bar centered (see centeredItemIdentifiers), page actions trailing.
+        [.back, .forward, .flexibleSpace, .addressBar, .flexibleSpace, .reload, .newTab, .snapshot, .toggleAssistants]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -452,7 +551,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         case .addressBar:
             let item = NSToolbarItem(itemIdentifier: identifier)
             item.label = "Address"
-            item.view = addressField
+            item.view = addressBar
+            item.visibilityPriority = .high   // the last thing to go to the overflow menu in a narrow window
             refreshAddressField()
             return item
         default: return nil
@@ -469,6 +569,31 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
 
     // MARK: Address bar
 
+    /// Room the system's toolbar buttons take, measured on macOS 26 (earlier versions' are smaller, which only
+    /// leaves the bar more slack): Back and Forward end 90pt into the page column; Reload, New Tab, Page for AI and
+    /// the panel toggle start 215pt before the window's trailing edge.
+    private static let leadingButtonsWidth: CGFloat = 90
+    private static let trailingButtonsWidth: CGFloat = 215
+
+    /// The toolbar centers the bar over the page column (between the rail and the assistants panel) but won't
+    /// shrink it to fit there, so it would push into the buttons or over the panel. This sizes it to the widest
+    /// it can be while centered there and clear of the buttons on both sides.
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        window?.layoutIfNeeded()
+        fitAddressBar()
+    }
+
+    private func fitAddressBar() {
+        guard let window else { return }
+        let column = contentVC.view.convert(contentVC.view.bounds, to: nil)
+        guard column.width > 0 else { return }
+        let gap: CGFloat = 12
+        let left = column.midX - (column.minX + Self.leadingButtonsWidth + gap)
+        let right = min(column.maxX, window.frame.width - Self.trailingButtonsWidth) - gap - column.midX
+        addressBar.fit(width: 2 * min(left, right))
+    }
+
     /// Shows the address of the front app's current tab (not whatever the assistants panel shows), so it stays put
     /// while a terminal has focus instead of going blank. Does nothing while the user is actively typing into it,
     /// so an unrelated page's title or loading change elsewhere can't overwrite what they're mid-typing.
@@ -477,10 +602,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         addressField.stringValue = currentWebsitePane?.webView.url?.absoluteString ?? ""
     }
 
-    /// Settings > General's toggle changed: apply it live, without needing to rebuild the toolbar item.
-    func addressBarEditingChanged() {
-        addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
-        if !addressField.isEditable { refreshAddressField() }
+    /// Whether the app in front has "Allow editing the address bar" on (Settings > Apps, or `editableAddress`).
+    private var frontAppAllowsAddressEditing: Bool {
+        registry.items(.apps).first { $0.id == contentVC.selectedID }?.editableAddress ?? false
+    }
+
+    /// Makes the bar editable or read-only for the app in front. Leaves it alone during a New Tab's one-off edit,
+    /// which puts it back itself when that edit ends.
+    private func applyAddressEditability() {
+        guard !isTemporaryAddressEdit else { return }
+        let editable = frontAppAllowsAddressEditing
+        addressField.isEditable = editable
+        addressField.toolTip = editable
+            ? "The address of the page in front. Type an address and press Return to go there."
+            : "The address of the page in front. Copy it with \u{2318}C; editing is off for this app in Settings > Apps."
+        if !editable { refreshAddressField() }
     }
 
     private func navigateToTypedAddress() {
@@ -523,7 +659,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         isEditingAddress = false
         if isTemporaryAddressEdit {
             isTemporaryAddressEdit = false
-            addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
+            applyAddressEditability()
         }
         refreshAddressField()
     }
@@ -531,7 +667,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     // MARK: New tab
 
     /// A blank tab in the app shown now. There's nowhere for it to go yet, so the address field is made editable
-    /// just this once (even if Settings > General's toggle is off) and focused, ready to type into.
+    /// just this once (even if the app doesn't allow editing it) and focused, ready to type into.
     @objc func newTab(_ sender: Any?) {
         guard let host = currentWebsitePane?.tabHost else { return }
         _ = host.openTab(configuration: WebEnvironment.makeConfiguration())

@@ -2,10 +2,9 @@ import AppKit
 import Darwin
 
 /// Listens on a local Unix socket so `MCPStdioServer` — a tiny process an agent's MCP config spawns, such as Claude
-/// Code running in a Terminal assistant — can read, click and type on the page open in Satellite's apps panel, or
-/// read every page in one of its tab groups (`TabCluster`) at once. Reading (not writing) can also target any
-/// other open app by name or id, whether or not it's the one shown now: a background page's web view keeps
-/// running regardless of visibility, so there's no need to switch to it just to read it.
+/// Code running in a Terminal assistant — can list and read any page open in Satellite (every app's tabs and the
+/// web assistants, shown or not: a background page keeps running, so nothing needs switching to), read a tab
+/// group's pages at once, and click and type on the page in front.
 ///
 /// Each asking agent (identified by its Terminal pane id, passed down as an environment variable when the pane
 /// starts) is confirmed once, the same way "Send to Assistant" confirms an assistant before a page reaches it:
@@ -73,39 +72,34 @@ final class MCPBridge {
             guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to \(kind.declinedVerb) this page."] }
             if answer.remember { trust.set(trustID, trusted: true) }
         }
-        if action == "list" {
-            let apps = controller.allWebsiteApps()
-            let lines = apps.map { app -> String in
-                if let title = app.title, let url = app.url { return "- \(app.name) (app: \u{201C}\(app.id)\u{201D}) \u{2014} \u{201C}\(title)\u{201D} \(url)" }
-                return "- \(app.name) (app: \u{201C}\(app.id)\u{201D}) \u{2014} not opened yet"
-            }
-            let text = "Apps open in Satellite. Pass one\u{2019}s name or id as `app` to read_active_page or read_tab_group to read it without switching to it:\n" + lines.joined(separator: "\n")
-            return ["ok": true, "text": text]
-        }
-
-        // click/type always act on the app shown now — reading elsewhere is one thing, acting on a page the user
-        // isn't even looking at is another, so "app" only applies to the read actions below.
-        let targetPane: WebPane?
-        if ["read", "readGroup"].contains(action), let identifier = request["app"] as? String, !identifier.isEmpty {
-            targetPane = controller.websitePane(matching: identifier)
-            if targetPane == nil { return ["ok": false, "error": "No open app matches \u{201C}\(identifier)\u{201D}. Call list_open_pages to see what's open."] }
-        } else {
-            targetPane = controller.currentWebsitePane
-        }
-        guard let pane = targetPane, pane.didCreateView, pane.webView.url != nil else {
-            return ["ok": false, "error": "There is no page open in Satellite to \(kind.declinedVerb)."]
-        }
         do {
             switch action {
+            case "list":
+                return ["ok": true, "text": Self.listing(controller.openPages(), front: controller.currentWebsitePane)]
             case "read":
-                let text = try await PageSnapshot.capture(pane.webView, options: .init(forAssistant: true))
-                return ["ok": true, "text": text]
+                let page: OpenPage?
+                if let tab = request["tab"] as? String, !tab.isEmpty {
+                    page = controller.page(withID: tab)
+                    if page == nil { return ["ok": false, "error": "No open page has the id \u{201C}\(tab)\u{201D}. Call list_open_pages for the current ids."] }
+                } else if let app = request["app"] as? String, !app.isEmpty {
+                    page = controller.currentPage(ofApp: app)
+                    if page == nil { return ["ok": false, "error": "No app or assistant matches \u{201C}\(app)\u{201D}. Call list_open_pages to see what\u{2019}s open."] }
+                } else {
+                    page = controller.openPages().first { $0.pane === controller.currentWebsitePane }
+                }
+                guard let page, page.isLoaded else {
+                    return ["ok": false, "error": "That page hasn\u{2019}t been opened yet, so there\u{2019}s nothing to read. Open it in Satellite first."]
+                }
+                return ["ok": true, "text": try await PageSnapshot.capture(page.pane.webView, options: .init(forAssistant: true))]
             case "readGroup":
                 guard let name = request["group"] as? String, !name.isEmpty else {
                     return ["ok": false, "error": "A group name is required."]
                 }
-                guard let tabGroup = pane.tabHost, let cluster = tabGroup.cluster(named: name) else {
-                    return ["ok": false, "error": "No open tab group named \u{201C}\(name)\u{201D} in that app."]
+                let found = Self.tabGroups(named: name, in: controller.openPages(), app: request["app"] as? String)
+                guard found.count == 1, let (tabGroup, cluster) = found.first else {
+                    if found.isEmpty { return ["ok": false, "error": "No open tab group is named \u{201C}\(name)\u{201D}. Call list_open_pages to see the groups."] }
+                    let apps = found.map { $0.0.home.name }.joined(separator: ", ")
+                    return ["ok": false, "error": "More than one app has a group named \u{201C}\(name)\u{201D} (\(apps)). Pass `app` to choose one."]
                 }
                 let members = tabGroup.panes(in: cluster).filter { $0.didCreateView && $0.webView.url != nil }
                 guard !members.isEmpty else { return ["ok": false, "error": "That group has no loaded pages in it."] }
@@ -114,6 +108,20 @@ final class MCPBridge {
                     sections.append(try await PageSnapshot.capture(member.webView, options: .init(forAssistant: true)))
                 }
                 return ["ok": true, "text": sections.joined(separator: "\n---\n\n")]
+            default:
+                break
+            }
+        } catch {
+            return ["ok": false, "error": error.localizedDescription]
+        }
+
+        // Clicking and typing only ever act on the page in front: reading a tab you aren't looking at is one
+        // thing, changing one is another.
+        guard let pane = controller.currentWebsitePane, pane.didCreateView, pane.webView.url != nil else {
+            return ["ok": false, "error": "There is no page open in Satellite to \(kind.declinedVerb)."]
+        }
+        do {
+            switch action {
             case "click":
                 guard let selector = request["selector"] as? String, !selector.isEmpty else {
                     return ["ok": false, "error": "A selector is required."]
@@ -135,9 +143,51 @@ final class MCPBridge {
         }
     }
 
+    /// What `list_open_pages` returns: every page with its id, grouped by app, then the web assistants.
+    private static func listing(_ pages: [OpenPage], front: WebPane?) -> String {
+        var lines = ["Pages open in Satellite. Pass a page\u{2019}s id as `tab` to read_page to read it, whichever app it\u{2019}s in and whether or not it\u{2019}s shown. Apps not opened yet have no page to read."]
+        var lastOwner: String?
+        var listedAssistantsHeading = false
+        for page in pages {
+            if page.isAssistant, !listedAssistantsHeading {
+                lines.append("\nAssistants")
+                listedAssistantsHeading = true
+            }
+            if !page.isAssistant, page.ownerID != lastOwner {
+                lines.append("\n\(page.owner) (app \u{201C}\(page.ownerID)\u{201D})")
+            }
+            lastOwner = page.ownerID
+            guard page.isLoaded else { lines.append("- not opened yet"); continue }
+            var line = "- [\(page.pane.pageID)] "
+            if page.isAssistant { line += "\(page.owner) (assistant \u{201C}\(page.ownerID)\u{201D}): " }
+            line += "\u{201C}\(page.pane.tabTitle)\u{201D} \(page.pane.webView.url?.absoluteString ?? "")"
+            var notes: [String] = []
+            if page.pane === front { notes.append("shown now") } else if page.isCurrentTab && !page.isAssistant { notes.append("its app\u{2019}s current tab") }
+            if let group = page.group { notes.append("group \u{201C}\(group)\u{201D}") }
+            if !notes.isEmpty { line += " (\(notes.joined(separator: ", ")))" }
+            lines.append(line)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Tab groups with this name (case-insensitive): in `app` if given, else in every app.
+    private static func tabGroups(named name: String, in pages: [OpenPage], app: String?) -> [(TabGroup, TabCluster)] {
+        var seen = Set<ObjectIdentifier>()
+        var found: [(TabGroup, TabCluster)] = []
+        for page in pages where !page.isAssistant {
+            if let app, !app.isEmpty, page.ownerID != app, page.owner.localizedCaseInsensitiveCompare(app) != .orderedSame { continue }
+            guard let host = page.pane.tabHost, seen.insert(ObjectIdentifier(host)).inserted,
+                  let cluster = host.cluster(named: name) else { continue }
+            found.append((host, cluster))
+        }
+        return found
+    }
+
     private enum Kind {
         case read, write
-        var trustPrefix: String { switch self { case .read: return "mcp-read"; case .write: return "mcp-write" } }
+        // The read key changed when reading grew from the page in front to every open page, so an approval
+        // given for the narrower wording isn't silently stretched to cover the wider one.
+        var trustPrefix: String { switch self { case .read: return "mcp-read-all"; case .write: return "mcp-write" } }
         var declinedVerb: String { switch self { case .read: return "read"; case .write: return "act on" } }
     }
 
@@ -145,8 +195,8 @@ final class MCPBridge {
         let alert = NSAlert()
         switch kind {
         case .read:
-            alert.messageText = "Let \(label) read this page?"
-            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read the page open in the apps panel \u{2014} its URL, title and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.current.summary) (change this in Settings > General)."
+            alert.messageText = "Let \(label) read the pages open in Satellite?"
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read pages open in Satellite \u{2014} any tab of any app and the web assistants, not only the one in front: their URLs, titles and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.current.summary) (change this in Settings > General)."
         case .write:
             alert.messageText = "Let \(label) click and type on this page?"
             alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to click and type on the page open in the apps panel \u{2014} which can submit forms and change data, including in Salesforce. This isn\u{2019}t limited to one field or action: once allowed, it can act anywhere on the page without asking again. Only allow agents you trust with that."

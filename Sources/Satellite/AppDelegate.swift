@@ -31,7 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainController = controller
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
         SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
-        SettingsWindowController.shared.onAddressBarEditingChanged = { [weak controller] in controller?.addressBarEditingChanged() }
         MCPBridge.shared.mainController = controller
         MCPBridge.shared.start()
 

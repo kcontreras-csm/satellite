@@ -18,11 +18,15 @@ struct SidebarItem: Equatable, Identifiable {
     var owner: String?
     /// Links that ask for a new window open as tabs inside this app (see `WebApp.tabs`).
     var opensLinksInTabs = false
+    /// The address bar can be typed into while this app is in front (see `WebApp.editableAddress`). Like
+    /// `terminal`, only config.json and Settings set it: items extensions add never have it.
+    private(set) var editableAddress = false
     /// Set for a terminal assistant. Only config.json sets it (below): items extensions add or patch never have it.
     private(set) var terminal: TerminalConfig?
 
     init(_ app: WebApp) {
         opensLinksInTabs = app.tabs ?? false
+        editableAddress = app.editableAddress ?? false
         id = app.id
         name = app.name
         url = app.url

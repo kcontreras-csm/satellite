@@ -271,6 +271,7 @@ private struct AppRow: View {
                         Text(app.name)
                         if model.isEdited(section, app) { Tag(text: "Edited") }
                         if app.tabs == true { Tag(text: "Links in tabs") }
+                        if app.editableAddress == true { Tag(text: "Editable address") }
                     }
                     Text(app.terminal.map(Self.describe) ?? app.url.absoluteString)
                         .font(.caption).foregroundStyle(.secondary)
@@ -334,6 +335,7 @@ struct AppEditor: View {
     @State private var address: String
     @State private var symbol: String
     @State private var opensLinksInTabs: Bool
+    @State private var editableAddress: Bool
     @State private var command: String
     @State private var directory: String
     /// The Gogh theme by name; nil is System.
@@ -353,6 +355,7 @@ struct AppEditor: View {
         _address = State(initialValue: original?.url.absoluteString ?? "")
         _symbol = State(initialValue: original?.symbol ?? (isTerminal ? "terminal" : "globe"))
         _opensLinksInTabs = State(initialValue: original?.tabs ?? false)
+        _editableAddress = State(initialValue: original?.editableAddress ?? false)
         _command = State(initialValue: original?.terminal?.command ?? "")
         _directory = State(initialValue: original?.terminal?.directory ?? "")
         _theme = State(initialValue: TerminalTheme.named(original?.terminal?.theme)?.name)   // an unknown name is System
@@ -415,6 +418,9 @@ struct AppEditor: View {
                     Toggle("Open links in new tabs", isOn: $opensLinksInTabs)
                     Text("Links that ask for a new window stay in this app as tabs, even links to other sites. Meant for launchers such as Okta, where each tile opens a different application.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Allow editing the address bar", isOn: $editableAddress)
+                    Text("While this app is in front, the toolbar\u{2019}s address bar can be typed into: enter an address and press Return to go there. Off, it only shows the address of the page and can be copied from.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -440,7 +446,15 @@ struct AppEditor: View {
         guard let original, let name = try? AppsModel.name(from: name) else { return nil }
         if isTerminal { return WebApp.makeTerminal(id: original.id, name: name, symbol: symbol.trimmingCharacters(in: .whitespaces), config: terminalConfig) }
         guard let url = try? AppsModel.address(from: address) else { return nil }
-        return WebApp(id: original.id, name: name, url: url, symbol: symbol.trimmingCharacters(in: .whitespaces), tabs: section == .apps && opensLinksInTabs ? true : nil)
+        return webApp(id: original.id, name: name, url: url, symbol: symbol.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// A web app or assistant from the fields. The app-only options are left out (nil) when off, so config.json
+    /// only mentions the ones in use.
+    private func webApp(id: String, name: String, url: URL, symbol: String) -> WebApp {
+        let isApp = section == .apps
+        return WebApp(id: id, name: name, url: url, symbol: symbol, tabs: isApp && opensLinksInTabs ? true : nil,
+                      editableAddress: isApp && editableAddress ? true : nil)
     }
 
     private var terminalConfig: TerminalConfig {
@@ -455,6 +469,7 @@ struct AppEditor: View {
         address = app.url.absoluteString
         symbol = app.symbol
         opensLinksInTabs = app.tabs ?? false
+        editableAddress = app.editableAddress ?? false
         command = app.terminal?.command ?? ""
         directory = app.terminal?.directory ?? ""
         theme = TerminalTheme.named(app.terminal?.theme)?.name
@@ -477,9 +492,8 @@ struct AppEditor: View {
             if isTerminal {
                 app = WebApp.makeTerminal(id: id, name: checkedName, symbol: checkedSymbol.isEmpty ? "terminal" : checkedSymbol, config: terminalConfig)
             } else {
-                app = WebApp(
-                    id: id, name: checkedName, url: try AppsModel.address(from: address),
-                    symbol: checkedSymbol.isEmpty ? "globe" : checkedSymbol, tabs: section == .apps && opensLinksInTabs ? true : nil)
+                app = webApp(id: id, name: checkedName, url: try AppsModel.address(from: address),
+                             symbol: checkedSymbol.isEmpty ? "globe" : checkedSymbol)
             }
             model.save(app, in: section)
             dismiss()

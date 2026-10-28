@@ -7,8 +7,6 @@ final class SettingsWindowController: NSWindowController {
     var onReloadPages: (() -> Void)?
     /// The address of the page in front, used to prefill match patterns.
     var currentPageURL: (() -> URL?)?
-    /// Settings > General's "Allow editing the address bar" changed; applies live without rebuilding the toolbar.
-    var onAddressBarEditingChanged: (() -> Void)?
 
     private init() {
         let window = NSWindow(
@@ -683,7 +681,6 @@ private struct GeneralSettings: View {
     @AppStorage(SnapshotDefaults.includeGuide) private var snapshotGuide = true
     @AppStorage(CodeEditor.defaultsKey) private var editorChoice = ""
     @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
-    @AppStorage(AddressBarDefaults.editable) private var addressBarEditable = false
 
     private var versionText: String {
         let build = Bundle.main.infoDictionary?["SatelliteBuild"] as? String
@@ -698,13 +695,6 @@ private struct GeneralSettings: View {
             .pickerStyle(.segmented)
             .onChange(of: appearance) { _, value in AppAppearance.apply(AppAppearance(rawValue: value) ?? .system) }
             Text("For all of Satellite. Web pages with a dark mode of their own (Claude, Slack\u{2026}) follow it; others, like Salesforce, stay as they are. Extensions can tell which is active, and how the page looks, from satellite.appearance.")
-                .font(.footnote).foregroundStyle(.secondary)
-
-            Divider()
-
-            Toggle("Allow editing the address bar", isOn: $addressBarEditable)
-                .onChange(of: addressBarEditable) { _, _ in SettingsWindowController.shared.onAddressBarEditingChanged?() }
-            Text("The toolbar's address bar always shows the page in front and can be copied from; off by default, it can\u{2019}t be typed into, since Satellite's apps are configured destinations, not a general browser. Turn this on to type a new address and press Return to go there.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()

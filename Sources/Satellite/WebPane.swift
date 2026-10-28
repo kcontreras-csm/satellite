@@ -10,6 +10,8 @@ extension Notification.Name {
 final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
     private(set) var name: String
     private(set) var homeURL: URL?
+    /// Names this page for Satellite's local MCP server (`list_open_pages`, `read_page`) for as long as it's open.
+    let pageID = String(UUID().uuidString.prefix(8)).lowercased()
     var onClose: (() -> Void)?
     /// The tab group this pane belongs to, for panes of the apps rail.
     weak var tabHost: TabGroup?

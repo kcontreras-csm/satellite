@@ -35,6 +35,9 @@ struct WebApp: Codable, Hashable {
     var tabs: Bool?
     /// Set for an assistant that is a terminal rather than a web page. Only config.json makes one: extensions can't.
     var terminal: TerminalConfig?
+    /// When true, the toolbar's address bar can be typed into while this app is in front, to go to another
+    /// address. Off (nil) by default: apps are configured destinations, so the bar is read-only and copyable.
+    var editableAddress: Bool?
 
     var isTerminal: Bool { terminal != nil }
 
@@ -68,7 +71,7 @@ struct TerminalConfig: Codable, Hashable {
 
 // A terminal entry needs no "url" in config.json; written back, it has none either.
 extension WebApp {
-    private enum CodingKeys: String, CodingKey { case id, name, url, symbol, tabs, terminal }
+    private enum CodingKeys: String, CodingKey { case id, name, url, symbol, tabs, terminal, editableAddress }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +80,7 @@ extension WebApp {
         symbol = try container.decode(String.self, forKey: .symbol)
         tabs = try container.decodeIfPresent(Bool.self, forKey: .tabs)
         terminal = try container.decodeIfPresent(TerminalConfig.self, forKey: .terminal)
+        editableAddress = try container.decodeIfPresent(Bool.self, forKey: .editableAddress)
         url = terminal == nil ? try container.decode(URL.self, forKey: .url) : Self.terminalURL(id: id)
     }
 
@@ -88,6 +92,7 @@ extension WebApp {
         try container.encode(symbol, forKey: .symbol)
         try container.encodeIfPresent(tabs, forKey: .tabs)
         try container.encodeIfPresent(terminal, forKey: .terminal)
+        try container.encodeIfPresent(editableAddress, forKey: .editableAddress)
     }
 }
 

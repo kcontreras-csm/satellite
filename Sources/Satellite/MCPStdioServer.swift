@@ -9,14 +9,20 @@ enum MCPStdioServer {
     private static let tools: [[String: Any]] = [
         [
             "name": "list_open_pages",
-            "description": "Lists every app open in Satellite (not this terminal), each with its current tab\u{2019}s title and address if it\u{2019}s been opened at least once. Use an entry\u{2019}s name or id as `app` in read_active_page or read_tab_group to read it without switching to it first.",
+            "description": "Lists every page open in Satellite (not this terminal): each tab of each app, grouped by app, then the web assistants \u{2014} each with an id, its title and address, which one is shown now, and its tab group if any. Pass an id to read_page to read that page, whether or not it\u{2019}s shown.",
             "inputSchema": ["type": "object", "properties": [String: Any]()],
         ],
         [
+            "name": "read_page",
+            "description": "Reads any page open in Satellite by its id from list_open_pages \u{2014} a background tab, another app\u{2019}s tab, or a web assistant \u{2014} without switching to it: its URL, title and visible content as Markdown. Satellite asks the user once per agent before sharing pages, the same as \u{201C}Send to Assistant\u{201D}.",
+            "inputSchema": ["type": "object", "required": ["tab"],
+                             "properties": ["tab": ["type": "string", "description": "A page id from list_open_pages."]]],
+        ],
+        [
             "name": "read_active_page",
-            "description": "Reads a page open in Satellite\u{2019}s apps panel (not this terminal): its URL, title and visible content as Markdown, including a list of clickable elements with selectors for click_element and type_text. Defaults to whichever app is shown now; pass `app` (from list_open_pages) to read a different one without switching to it — its page keeps running in the background regardless. Satellite asks the user once per agent before sharing it, the same as \u{201C}Send to Assistant\u{201D}.",
+            "description": "Reads the page shown now in Satellite\u{2019}s apps panel (not this terminal): its URL, title and visible content as Markdown, including a list of clickable elements with selectors for click_element and type_text. Pass `app` for another app\u{2019}s current tab instead; read_page reads any tab. Satellite asks the user once per agent before sharing pages, the same as \u{201C}Send to Assistant\u{201D}.",
             "inputSchema": ["type": "object",
-                             "properties": ["app": ["type": "string", "description": "An app’s name or id, from list_open_pages. Omit to read whichever app is shown now."]]],
+                             "properties": ["app": ["type": "string", "description": "An app\u{2019}s or assistant\u{2019}s name or id, from list_open_pages. Omit for the page shown now."]]],
         ],
         [
             "name": "click_element",
@@ -34,10 +40,10 @@ enum MCPStdioServer {
         ],
         [
             "name": "read_tab_group",
-            "description": "Reads every open tab in a named tab group (Satellite\u{2019}s Chrome-style groups: a colored chip plus the tabs grouped under it) \u{2014} each as the same Markdown read_active_page returns, concatenated, so an agent can search across several related pages at once. `group` is the group\u{2019}s name as shown on its chip in the tab bar. Defaults to whichever app is shown now; pass `app` (from list_open_pages) for a group in a different one.",
+            "description": "Reads every open tab in a named tab group (Satellite\u{2019}s Chrome-style groups: a colored chip plus the tabs grouped under it) \u{2014} each as the same Markdown read_page returns, concatenated, so an agent can search across several related pages at once. `group` is the group\u{2019}s name, as on its chip in the tab bar and in list_open_pages. Looks in every app; pass `app` only if two apps have a group with that name.",
             "inputSchema": ["type": "object", "required": ["group"],
                              "properties": ["group": ["type": "string", "description": "A tab group\u{2019}s name, as shown on its chip in Satellite\u{2019}s tab bar."],
-                                            "app": ["type": "string", "description": "An app’s name or id, from list_open_pages. Omit for whichever app is shown now."]]],
+                                            "app": ["type": "string", "description": "An app\u{2019}s name or id, from list_open_pages, when more than one app has a group with that name."]]],
         ],
     ]
 
@@ -91,6 +97,11 @@ enum MCPStdioServer {
         switch tool {
         case "list_open_pages": request["action"] = "list"
         case "read_active_page": request["action"] = "read"
+        case "read_page":
+            guard let tab = arguments["tab"] as? String, !tab.isEmpty else {
+                return .failure(BridgeFailure(message: "read_page needs a `tab` id from list_open_pages."))
+            }
+            request["action"] = "read"
         case "click_element": request["action"] = "click"
         case "type_text": request["action"] = "type"
         case "read_tab_group": request["action"] = "readGroup"
