@@ -204,11 +204,11 @@ final class TabGroup {
         for pane in panes(in: cluster) { close(pane) }
     }
 
-    /// A default name that doesn't collide with an existing group ("Group 2", "Group 3", ...).
-    func nextClusterName() -> String {
+    /// A default name that doesn't collide with an existing group ("Group 2", "From Chrome 2", ...).
+    func nextClusterName(base: String = "Group") -> String {
         var n = clusters.count + 1
-        while clusters.contains(where: { $0.name == "Group \(n)" }) { n += 1 }
-        return "Group \(n)"
+        while clusters.contains(where: { $0.name == "\(base) \(n)" }) { n += 1 }
+        return "\(base) \(n)"
     }
 
     private func dropFromCluster(_ pane: WebPane) {

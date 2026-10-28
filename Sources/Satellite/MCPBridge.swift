@@ -3,7 +3,9 @@ import Darwin
 
 /// Listens on a local Unix socket so `MCPStdioServer` — a tiny process an agent's MCP config spawns, such as Claude
 /// Code running in a Terminal assistant — can read, click and type on the page open in Satellite's apps panel, or
-/// read every page in one of its tab groups (`TabCluster`) at once.
+/// read every page in one of its tab groups (`TabCluster`) at once. Reading (not writing) can also target any
+/// other open app by name or id, whether or not it's the one shown now: a background page's web view keeps
+/// running regardless of visibility, so there's no need to switch to it just to read it.
 ///
 /// Each asking agent (identified by its Terminal pane id, passed down as an environment variable when the pane
 /// starts) is confirmed once, the same way "Send to Assistant" confirms an assistant before a page reaches it:
@@ -71,7 +73,26 @@ final class MCPBridge {
             guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to \(kind.declinedVerb) this page."] }
             if answer.remember { trust.set(trustID, trusted: true) }
         }
-        guard let pane = controller.currentWebsitePane, pane.didCreateView, pane.webView.url != nil else {
+        if action == "list" {
+            let apps = controller.allWebsiteApps()
+            let lines = apps.map { app -> String in
+                if let title = app.title, let url = app.url { return "- \(app.name) (app: \u{201C}\(app.id)\u{201D}) \u{2014} \u{201C}\(title)\u{201D} \(url)" }
+                return "- \(app.name) (app: \u{201C}\(app.id)\u{201D}) \u{2014} not opened yet"
+            }
+            let text = "Apps open in Satellite. Pass one\u{2019}s name or id as `app` to read_active_page or read_tab_group to read it without switching to it:\n" + lines.joined(separator: "\n")
+            return ["ok": true, "text": text]
+        }
+
+        // click/type always act on the app shown now — reading elsewhere is one thing, acting on a page the user
+        // isn't even looking at is another, so "app" only applies to the read actions below.
+        let targetPane: WebPane?
+        if ["read", "readGroup"].contains(action), let identifier = request["app"] as? String, !identifier.isEmpty {
+            targetPane = controller.websitePane(matching: identifier)
+            if targetPane == nil { return ["ok": false, "error": "No open app matches \u{201C}\(identifier)\u{201D}. Call list_open_pages to see what's open."] }
+        } else {
+            targetPane = controller.currentWebsitePane
+        }
+        guard let pane = targetPane, pane.didCreateView, pane.webView.url != nil else {
             return ["ok": false, "error": "There is no page open in Satellite to \(kind.declinedVerb)."]
         }
         do {
@@ -84,7 +105,7 @@ final class MCPBridge {
                     return ["ok": false, "error": "A group name is required."]
                 }
                 guard let tabGroup = pane.tabHost, let cluster = tabGroup.cluster(named: name) else {
-                    return ["ok": false, "error": "No open tab group named \u{201C}\(name)\u{201D} in the app shown now."]
+                    return ["ok": false, "error": "No open tab group named \u{201C}\(name)\u{201D} in that app."]
                 }
                 let members = tabGroup.panes(in: cluster).filter { $0.didCreateView && $0.webView.url != nil }
                 guard !members.isEmpty else { return ["ok": false, "error": "That group has no loaded pages in it."] }

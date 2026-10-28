@@ -6,17 +6,42 @@ extension NSToolbarItem.Identifier {
     static let back = NSToolbarItem.Identifier("satellite.back")
     static let forward = NSToolbarItem.Identifier("satellite.forward")
     static let reload = NSToolbarItem.Identifier("satellite.reload")
+    static let addressBar = NSToolbarItem.Identifier("satellite.addressBar")
+    static let newTab = NSToolbarItem.Identifier("satellite.newTab")
     static let toggleAssistants = NSToolbarItem.Identifier("satellite.toggleAssistants")
     static let snapshot = NSToolbarItem.Identifier("satellite.snapshot")
 }
 
-final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation {
+/// Settings > General's "Allow editing the address bar", off by default: Satellite's apps are configured
+/// destinations, not a general browser, so typing a new address is an extra capability the user opts into.
+enum AddressBarDefaults {
+    static let editable = "addressBarEditable"
+}
+
+/// A Safari-like address field: the same rounded, iconed search-field look, centered in the toolbar with room
+/// around it. Shows the current page's address, selects it all on click so it's one Cmd+C away, and (only once
+/// Settings > General's toggle allows it) can be typed into to navigate. `NSSearchField` is just for that look —
+/// it's still an `NSTextField` underneath, so the usual text field delegate methods still apply unchanged.
+final class AddressBarField: NSSearchField {
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        if !isEditable { currentEditor()?.selectAll(nil) }
+    }
+}
+
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSSearchFieldDelegate {
     private let registry = UIRegistry.shared
     private let railVC = RailViewController()
     private let contentVC = ContentViewController()
     private let assistantsVC = AssistantsViewController()
     private let assistantsItem: NSSplitViewItem
     private var observers: [NSObjectProtocol] = []
+    private let addressField = AddressBarField()
+    private var isEditingAddress = false
+    /// True while a New Tab's blank address field is editable only because of that (the setting itself is off);
+    /// cleared, and the field re-locked, once that one address is committed or cancelled.
+    private var isTemporaryAddressEdit = false
+    private var groupsBrowser: GroupsBrowserWindowController?
     let assistantSender = AssistantSender()
 
     init(openSettings: @escaping () -> Void) {
@@ -55,14 +80,34 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
 
+        addressField.font = .systemFont(ofSize: 12.5)
+        addressField.lineBreakMode = .byTruncatingTail
+        addressField.placeholderString = "Address"
+        addressField.alignment = .left
+        addressField.focusRingType = .default
+        addressField.isSelectable = true   // copyable even while read-only
+        addressField.delegate = self
+        addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
+        addressField.toolTip = "The address of the page in front. Copy it with \u{2318}C; editing is off in Settings > General."
+        addressField.translatesAutoresizingMaskIntoConstraints = false
+        let addressWidth = addressField.widthAnchor.constraint(equalToConstant: 560)
+        addressWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            addressField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            addressWidth,
+            addressField.heightAnchor.constraint(equalToConstant: 24),
+        ])
+
         railVC.onSelect = { [weak self] in self?.selectApp($0) }
         railVC.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
         railVC.onOpenSettings = openSettings
+        railVC.onOpenGroups = { [weak self] in self?.showGroupsBrowser() }
 
         let center = NotificationCenter.default
         observers = [
             center.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
                 self?.window?.toolbar?.validateVisibleItems()
+                self?.refreshAddressField()
             },
             center.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
                 self?.applyItems()
@@ -335,6 +380,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// what Satellite's local MCP server (`MCPBridge`) shares with an agent that asks to read "the website".
     var currentWebsitePane: WebPane? { contentVC.selectedPane }
 
+    /// Any app's current tab, by id or name — so `MCPBridge` can read a page without switching to it first.
+    func websitePane(matching identifier: String) -> WebPane? { contentVC.pane(matching: identifier) }
+
+    /// Every app with what it's showing, for `MCPBridge`'s `list_open_pages`.
+    func allWebsiteApps() -> [(id: String, name: String, title: String?, url: String?)] { contentVC.allAppsSummary }
+
     var hasTerminal: Bool { assistantsVC.firstTerminalID != nil }
 
     /// Opens the theme list of the terminal in the panel (the first terminal, when another assistant is shown).
@@ -354,7 +405,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.back, .forward, .reload, .flexibleSpace, .snapshot, .toggleAssistants]
+        // A flexible space on each side of the address bar centers it in the window, Safari-style, with room
+        // around it rather than sitting flush against the surrounding buttons.
+        [.back, .forward, .flexibleSpace, .addressBar, .reload, .flexibleSpace, .newTab, .snapshot, .toggleAssistants]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -394,7 +447,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         case .back: return make("chevron.left", "Back", #selector(goBack(_:)))
         case .forward: return make("chevron.right", "Forward", #selector(goForward(_:)))
         case .reload: return make("arrow.clockwise", "Reload", #selector(reloadPage(_:)))
+        case .newTab: return make("plus", "New Tab", #selector(newTab(_:)))
         case .toggleAssistants: return make("sidebar.right", "Toggle Assistants", #selector(toggleAssistants(_:)))
+        case .addressBar:
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "Address"
+            item.view = addressField
+            refreshAddressField()
+            return item
         default: return nil
         }
     }
@@ -404,6 +464,114 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         case .back: return activePane?.webView.canGoBack ?? false
         case .forward: return activePane?.webView.canGoForward ?? false
         default: return true
+        }
+    }
+
+    // MARK: Address bar
+
+    /// Shows the address of the front app's current tab (not whatever the assistants panel shows), so it stays put
+    /// while a terminal has focus instead of going blank. Does nothing while the user is actively typing into it,
+    /// so an unrelated page's title or loading change elsewhere can't overwrite what they're mid-typing.
+    private func refreshAddressField() {
+        guard !isEditingAddress else { return }
+        addressField.stringValue = currentWebsitePane?.webView.url?.absoluteString ?? ""
+    }
+
+    /// Settings > General's toggle changed: apply it live, without needing to rebuild the toolbar item.
+    func addressBarEditingChanged() {
+        addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
+        if !addressField.isEditable { refreshAddressField() }
+    }
+
+    private func navigateToTypedAddress() {
+        guard let pane = currentWebsitePane else { return }
+        let typed = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = Self.url(from: typed) else { refreshAddressField(); return }
+        pane.webView.load(URLRequest(url: url))
+    }
+
+    /// A typed address: used as-is if it already has a scheme, else tried as an https host.
+    static func url(from text: String) -> URL? {
+        guard !text.isEmpty else { return nil }
+        if let url = URL(string: text), url.scheme != nil { return url }
+        guard let url = URL(string: "https://" + text), url.host?.contains(".") == true else { return nil }
+        return url
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === addressField else { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            navigateToTypedAddress()
+            window?.makeFirstResponder(nil)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            window?.makeFirstResponder(nil)
+            return true
+        default:
+            return false
+        }
+    }
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        guard obj.object as? NSTextField === addressField else { return }
+        isEditingAddress = true
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard obj.object as? NSTextField === addressField else { return }
+        isEditingAddress = false
+        if isTemporaryAddressEdit {
+            isTemporaryAddressEdit = false
+            addressField.isEditable = UserDefaults.standard.bool(forKey: AddressBarDefaults.editable)
+        }
+        refreshAddressField()
+    }
+
+    // MARK: New tab
+
+    /// A blank tab in the app shown now. There's nowhere for it to go yet, so the address field is made editable
+    /// just this once (even if Settings > General's toggle is off) and focused, ready to type into.
+    @objc func newTab(_ sender: Any?) {
+        guard let host = currentWebsitePane?.tabHost else { return }
+        _ = host.openTab(configuration: WebEnvironment.makeConfiguration())
+        if !addressField.isEditable {
+            addressField.isEditable = true
+            isTemporaryAddressEdit = true
+        }
+        addressField.stringValue = ""
+        window?.makeFirstResponder(addressField)
+    }
+
+    // MARK: Groups browser
+
+    func showGroupsBrowser() {
+        let browser = GroupsBrowserWindowController(
+            clusters: contentVC.allClusters,
+            onJump: { [weak self] appID, clusterID in
+                self?.selectApp(appID)
+                self?.contentVC.jumpToCluster(clusterID, in: appID)
+            },
+            onImport: { [weak self] tabs in self?.importChromeTabs(tabs) })
+        groupsBrowser = browser
+        browser.showWindow(nil)
+        browser.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Opens each found tab in the app shown now, grouped together as one new cluster, so they're easy to review,
+    /// rename or ungroup afterward rather than scattering loose into the existing tabs.
+    private func importChromeTabs(_ tabs: [ChromeImport.FoundTab]) {
+        guard !tabs.isEmpty, let host = currentWebsitePane?.tabHost else { return }
+        var cluster: TabCluster?
+        for tab in tabs {
+            let pane = host.openTab(configuration: WebEnvironment.makeConfiguration())
+            pane.webView.load(URLRequest(url: tab.url))
+            guard let index = host.tabs.firstIndex(where: { $0 === pane }) else { continue }
+            if let cluster {
+                host.join(index, to: cluster)
+            } else {
+                cluster = host.newCluster(at: index, name: host.nextClusterName(base: "From Chrome"), color: .gray)
+            }
         }
     }
 }

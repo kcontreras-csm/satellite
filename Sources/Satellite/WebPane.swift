@@ -52,6 +52,7 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
             view.observe(\.canGoForward, changeHandler: { v, c in notify(v, c) }),
             view.observe(\.isLoading, changeHandler: { v, c in notify(v, c) }),
             view.observe(\.title, changeHandler: { v, c in notify(v, c) }),
+            view.observe(\.url, changeHandler: { v, c in notify(v, c) }),
         ]
         return view
     }()

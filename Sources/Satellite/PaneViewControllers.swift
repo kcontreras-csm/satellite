@@ -17,6 +17,54 @@ final class ContentViewController: NSViewController {
     var selectedPane: WebPane? { selectedGroup?.current }
     var hasClosableTab: Bool { selectedGroup?.hasClosableTab ?? false }
 
+    /// A tab group, with which app it belongs to, for the Groups browser.
+    struct ClusterEntry: Identifiable {
+        var id: UUID { cluster.id }
+        let appID: String
+        let appName: String
+        let cluster: TabCluster
+        let tabCount: Int
+    }
+
+    /// Every tab group across every app, for the Groups browser. Groups stay where they are; this only lists them.
+    var allClusters: [ClusterEntry] {
+        var entries: [ClusterEntry] = []
+        for (appID, group) in groups {
+            for cluster in group.clusters {
+                let count = group.panes(in: cluster).count
+                entries.append(ClusterEntry(appID: appID, appName: group.home.name, cluster: cluster, tabCount: count))
+            }
+        }
+        return entries.sorted { $0.appName == $1.appName ? $0.cluster.name < $1.cluster.name : $0.appName < $1.appName }
+    }
+
+    /// The current tab of the app matched by id (exact) or name (case-insensitive) — for the local MCP server to
+    /// read a page without needing that app to be the one shown now. A background page's web view keeps running
+    /// and can be read or snapshotted the same as the front one; it just isn't what the window displays.
+    func pane(matching identifier: String) -> WebPane? {
+        (groups[identifier] ?? groups.values.first { $0.home.name.localizedCaseInsensitiveCompare(identifier) == .orderedSame })?.current
+    }
+
+    /// Every app, with its current tab's title and address if it's been opened at least once — for the MCP
+    /// server's `list_open_pages`, so an agent can see what `app` identifiers are available to read.
+    var allAppsSummary: [(id: String, name: String, title: String?, url: String?)] {
+        var entries: [(id: String, name: String, title: String?, url: String?)] = []
+        for (id, group) in groups {
+            let pane = group.current
+            let loaded = pane.didCreateView && pane.webView.url != nil
+            entries.append((id: id, name: group.home.name, title: loaded ? pane.tabTitle : nil, url: loaded ? pane.webView.url?.absoluteString : nil))
+        }
+        return entries.sorted { $0.name < $1.name }
+    }
+
+    /// Switches to `appID` and brings `clusterID`'s tabs to the front: expands it if collapsed, and selects its
+    /// first tab. The caller (MainWindowController) has already called `selectApp`, which shows the app itself.
+    func jumpToCluster(_ clusterID: UUID, in appID: String) {
+        guard let group = groups[appID], let cluster = group.clusters.first(where: { $0.id == clusterID }) else { return }
+        if cluster.collapsed { group.toggleCollapsed(cluster) }
+        if let index = group.tabs.indices.first(where: { group.cluster(at: $0)?.id == clusterID }) { group.select(index) }
+    }
+
     deinit {
         if let titleObserver { NotificationCenter.default.removeObserver(titleObserver) }
     }
@@ -213,6 +261,8 @@ final class ContentViewController: NSViewController {
         tabBarHeight?.constant = several ? 34 : 0
         if several { tabBar.show(group) }
         view.window?.makeFirstResponder(current.webView)
+        // The front tab or app changed: let the toolbar (back/forward state, the address bar) catch up.
+        NotificationCenter.default.post(name: .webPaneStateChanged, object: current)
     }
 }
 

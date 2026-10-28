@@ -136,6 +136,8 @@ final class RailButton: NSControl {
 final class RailViewController: NSViewController {
     var onSelect: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// A fixed entry, like Settings: not an app, nothing to configure, always there.
+    var onOpenGroups: (() -> Void)?
     /// The right-click menu of an app, by id.
     var menuForApp: ((String) -> NSMenu?)?
 
@@ -152,17 +154,24 @@ final class RailViewController: NSViewController {
         stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
 
+        let groups = RailButton(title: "Groups", symbol: "square.grid.2x2", tooltip: "Tab Groups", badge: nil)
+        groups.target = self
+        groups.action = #selector(groupsClicked)
+
         let settings = RailButton(title: "Settings", symbol: "gearshape", tooltip: "Settings  \u{2318},", badge: nil)
         settings.target = self
         settings.action = #selector(settingsClicked)
 
         root.addSubview(stack)
+        root.addSubview(groups)
         root.addSubview(settings)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
             stack.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             settings.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
             settings.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            groups.bottomAnchor.constraint(equalTo: settings.topAnchor, constant: -4),
+            groups.centerXAnchor.constraint(equalTo: root.centerXAnchor),
         ])
         view = root
     }
@@ -215,5 +224,9 @@ final class RailViewController: NSViewController {
 
     @objc private func settingsClicked() {
         onOpenSettings?()
+    }
+
+    @objc private func groupsClicked() {
+        onOpenGroups?()
     }
 }
