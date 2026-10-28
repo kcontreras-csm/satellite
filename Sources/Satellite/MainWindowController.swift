@@ -331,6 +331,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         return contentVC.selectedPane
     }
 
+    /// The page open in the apps panel, regardless of which side has focus — what "Send to Assistant" sends, and
+    /// what Satellite's local MCP server (`MCPBridge`) shares with an agent that asks to read "the website".
+    var currentWebsitePane: WebPane? { contentVC.selectedPane }
+
     var hasTerminal: Bool { assistantsVC.firstTerminalID != nil }
 
     /// Opens the theme list of the terminal in the panel (the first terminal, when another assistant is shown).

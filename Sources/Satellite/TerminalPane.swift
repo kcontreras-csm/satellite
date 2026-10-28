@@ -73,7 +73,7 @@ final class TerminalPane: NSObject, LocalProcessTerminalViewDelegate {
     }
 
     func start() {
-        let launch = Self.launch(for: config)
+        let launch = Self.launch(for: config, id: id)
         if hasStarted { view.softReset() }   // modes the last program left on (mouse, alternate screen...) shouldn't stick
         view.startProcess(executable: launch.executable, args: launch.args, environment: launch.environment,
                           execName: launch.execName, currentDirectory: launch.directory)
@@ -198,7 +198,7 @@ final class TerminalPane: NSObject, LocalProcessTerminalViewDelegate {
     /// How to start `config`: always through the user's login shell, interactive, so PATH and everything else from
     /// their shell profile apply (an app opened from the Dock gets a bare PATH, where `claude` and Homebrew tools
     /// aren't found). A command runs in that shell, which then stays open as an interactive shell.
-    nonisolated static func launch(for config: TerminalConfig, shell: String = userShell(), home: String = NSHomeDirectory(),
+    nonisolated static func launch(for config: TerminalConfig, id: String = "", shell: String = userShell(), home: String = NSHomeDirectory(),
                        environment: [String: String] = ProcessInfo.processInfo.environment) -> Launch {
         let shellName = (shell as NSString).lastPathComponent
         var args: [String] = []
@@ -213,6 +213,9 @@ final class TerminalPane: NSObject, LocalProcessTerminalViewDelegate {
         env["TERM_PROGRAM_VERSION"] = AppInfo.version.description
         if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
         env["SHELL"] = shell
+        // Lets an MCP config in this terminal (e.g. Claude Code's) spawn `satellite --mcp-stdio` and have it
+        // identify which pane is asking, so Satellite's "read the page" confirmation is remembered per agent.
+        if !id.isEmpty { env["SATELLITE_MCP_PANE_ID"] = id }
         for key in ["TERM_SESSION_ID", "ITERM_SESSION_ID", "ITERM_PROFILE", "VSCODE_INJECTION", "__CFBundleIdentifier"] { env.removeValue(forKey: key) }
 
         return Launch(

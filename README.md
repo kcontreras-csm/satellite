@@ -73,6 +73,18 @@ It always starts through your login shell, interactive, so your PATH and profile
 
 **Send to Assistant** and **Ask About This** work with it: the selection (or page) is pasted at the prompt and Return is not pressed. Satellite only pastes there when the program running has turned on bracketed paste (zsh and Claude Code do), so the text arrives as text; otherwise each line break would act as Return and run the lines as commands, so it goes to the clipboard instead. Nothing on a web page or in an extension can read from or type into a terminal: only config.json and Settings make one, extensions can't add one or change what it runs (like any built-in item they can only rename, hide or badge it), and there is no bridge from pages to it. Case data sent into a terminal that runs an AI tool goes to that tool, so the same rules apply as for the other assistants.
 
+**Letting an agent read a page.** Satellite always runs a small local MCP (Model Context Protocol) server, so a command-line agent in a terminal — Claude Code, say — can read the page open in the apps panel itself, instead of you using Send to Assistant each time. It's on whenever Satellite is running; there's nothing to turn on. It offers one tool, `read_active_page`, which returns the same Markdown snapshot Send to Assistant sends (its URL, title and visible content, following the **Text** setting in Settings > General). The first time a given terminal's agent calls it, Satellite asks you to allow or deny it, with "Don't ask again for \<name\>" — the same confirmation, and the same reasoning, as sending a page to an assistant: pages can hold customer data, and not every agent is approved for it. Allowing is remembered per terminal entry; add a new terminal (so it needs its own allow) rather than reusing one that's already trusted if you want to keep agents apart.
+
+To connect Claude Code to it, point its MCP config at Satellite with `--mcp-stdio`:
+
+    claude mcp add satellite -- /Applications/Satellite.app/Contents/MacOS/Satellite --mcp-stdio
+
+or, in `.mcp.json`:
+
+    { "mcpServers": { "satellite": { "command": "/Applications/Satellite.app/Contents/MacOS/Satellite", "args": ["--mcp-stdio"] } } }
+
+`--mcp-stdio` only works while Satellite itself is already running (it relays to it over a Unix socket at `~/Library/Application Support/Satellite/mcp.sock`) and only answers with a real page from inside a Satellite terminal, which sets `SATELLITE_MCP_PANE_ID` for whatever it runs so the allow/deny above is asked per terminal entry, not once for every agent anywhere. Run from a `swift run` checkout, use `.build/debug/Satellite --mcp-stdio` instead of the path above.
+
 `scripts/test-terminal.sh` checks all of this against your real login shell (without touching your clipboard). SwiftTerm's license is in `THIRD_PARTY_NOTICES.md`, which the bundled app includes.
 
 ## Security keys

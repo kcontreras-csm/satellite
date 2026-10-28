@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainController = controller
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
         SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
+        MCPBridge.shared.mainController = controller
+        MCPBridge.shared.start()
 
         shortcuts.setAppCommands(BuiltInCommands.make(window: controller, app: AppActions(
             openSettings: { [weak self] in self?.openSettings() },
@@ -61,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // The window closes but sessions stay alive; the Dock icon reopens it.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) { MCPBridge.shared.stop() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { mainController?.showWindow(nil) }
