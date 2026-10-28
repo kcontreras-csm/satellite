@@ -197,33 +197,42 @@ final class ContentViewController: NSViewController {
         return true
     }
 
-    /// Right-click on a tab: its link, Close Tab for the ones that can close, then groups.
+    /// Right-click on a tab: its link, Close Tab for the ones that can close, then its group items.
     private func tabMenu(at index: Int) -> NSMenu? {
         guard let group = selectedGroup, group.tabs.indices.contains(index) else { return nil }
         let pane = group.tabs[index]
         var extra: [NSMenuItem] = []
         if group.canClose(index) {
             extra.append(ClosureMenuItem(title: "Close Tab") { [weak group] in group?.close(at: index) })
+            extra.append(.separator())
         }
-        extra.append(.separator())
-        if let groupID = group.savedGroupID, let saved = satelliteGroups.group(groupID) {
-            if let memberID = pane.groupMemberID {
-                extra.append(ClosureMenuItem(title: "Remove from \u{201C}\(saved.name)\u{201D}") { [weak self] in
-                    self?.satelliteGroups.remove(memberID: memberID, from: groupID)
-                })
-            } else {
-                // A tab one of the group's pages opened: here for now, kept only if asked.
-                extra.append(ClosureMenuItem(title: "Keep in \u{201C}\(saved.name)\u{201D}") { [weak self, weak pane] in
-                    guard let self, let pane else { return }
-                    self.satelliteGroups.keep(pane, in: groupID)
-                })
-            }
-        } else {
+        extra += groupMenuItems(for: pane)
+        return PageLink.menu(for: pane, window: view.window, extra: extra, pasteboard: linkPasteboard)
+    }
+
+    /// The menu of a page as a whole — an app in the rail, or the address bar: its link, then its group items.
+    func pageMenu(for pane: WebPane) -> NSMenu {
+        PageLink.menu(for: pane, window: view.window, extra: groupMenuItems(for: pane), pasteboard: linkPasteboard)
+    }
+
+    /// For one of a group's tabs: take it out of the group (or keep a tab the group's pages opened). For any other
+    /// page: Add to Group.
+    func groupMenuItems(for pane: WebPane) -> [NSMenuItem] {
+        guard let groupID = pane.tabHost?.savedGroupID, let saved = satelliteGroups.group(groupID) else {
             let item = NSMenuItem(title: "Add to Group", action: nil, keyEquivalent: "")
             item.submenu = addToGroupMenu(for: pane)
-            extra.append(item)
+            return [item]
         }
-        return PageLink.menu(for: pane, window: view.window, extra: extra, pasteboard: linkPasteboard)
+        if let memberID = pane.groupMemberID {
+            return [ClosureMenuItem(title: "Remove from \u{201C}\(saved.name)\u{201D}") { [weak self] in
+                self?.satelliteGroups.remove(memberID: memberID, from: groupID)
+            }]
+        }
+        // A tab one of the group's pages opened: here for now, kept only if asked.
+        return [ClosureMenuItem(title: "Keep in \u{201C}\(saved.name)\u{201D}") { [weak self, weak pane] in
+            guard let self, let pane else { return }
+            self.satelliteGroups.keep(pane, in: groupID)
+        }]
     }
 
     /// The groups an app's tab can be added to, and a new one. Adding copies the page's address into the group;
@@ -257,10 +266,10 @@ final class ContentViewController: NSViewController {
         }
     }
 
-    /// Right-click on an app in the rail: the link of the tab it shows (its own page, or another tab it opened).
+    /// Right-click on an app in the rail: the tab it shows (its own page, or another tab it opened).
     func appMenu(for id: String) -> NSMenu? {
         guard let group = groups[id] else { return nil }
-        return PageLink.menu(for: group.current, window: view.window, pasteboard: linkPasteboard)
+        return pageMenu(for: group.current)
     }
 
     func nextTab() { selectedGroup?.selectNext() }

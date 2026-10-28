@@ -68,7 +68,7 @@ A tab group keeps pages from any apps or addresses together under a name and a c
 - **Open** shows the group in the main window like an app, loading it first if needed: its pages are tabs, behind a chip with the group's name (click the chip to go back to the list). The address bar shows each page's address, read-only.
 - The **•••** menu (or right-click) adds an app's page or an address, renames, recolors, or deletes the group. Expand a group (the arrow) to see its pages, each marked loaded or not, with a button to take it out.
 
-**New Group** (top right) makes one **From App** (that app's page), **From Address…**, or empty. Right-click any app's tab and choose **Add to Group** to copy what it shows into a group, or into a new one; the tab stays in its app.
+**New Group** (top right) makes one **From App** (that app's page), **From Address…**, or empty. Right-click any app's tab, an app in the rail, or the address bar and choose **Add to Group** to copy the page it shows into a group, or into a new one; the page stays in its app.
 
 Closing one of a group's tabs only closes it for now — the page stays in the group, and **Load** reopens it; **Remove from Group** (right-click the tab) takes it out. Closing a group's last tab unloads the group. A link one of its pages opens in a new tab becomes a tab of the group for the session but isn't saved unless you right-click it and choose **Keep in Group**. Pages are saved at the address they were added with, not wherever you navigate them to, since sign-in redirects can put tokens in an address.
 

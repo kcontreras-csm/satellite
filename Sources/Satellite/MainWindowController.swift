@@ -16,9 +16,30 @@ extension NSToolbarItem.Identifier {
 /// The text inside the address bar: shows the current page's address, selects it all on click so it's one Cmd+C
 /// away, and (only once Settings > General's toggle allows it) can be typed into to navigate.
 final class AddressBarField: NSTextField {
+    /// Right-click while not typing in it: the page's own menu (its link, Add to Group).
+    var pageMenu: (() -> NSMenu?)?
+    /// Right-click while typing in it: these follow the usual Cut, Copy and Paste.
+    var editingMenuItems: (() -> [NSMenuItem])?
+
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         if !isEditable { currentEditor()?.selectAll(nil) }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        if currentEditor() == nil, let menu = pageMenu?() { return menu }
+        return super.menu(for: event)
+    }
+
+    // While it's being typed in, its field editor asks its delegate (this field) for the menu.
+    @objc(textView:menu:forEvent:atIndex:)
+    func textView(_ textView: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+        let extra = editingMenuItems?() ?? []
+        if !extra.isEmpty {
+            menu.addItem(.separator())
+            extra.forEach(menu.addItem)
+        }
+        return menu
     }
 
     // The ring follows focus itself; controlTextDidBeginEditing only arrives with the first keystroke.
@@ -115,6 +136,8 @@ final class AddressBar: NSView {
         window?.makeFirstResponder(field)
         field.currentEditor()?.selectAll(nil)
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? { field.menu(for: event) }
 }
 
 final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSTextFieldDelegate {
@@ -176,6 +199,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         addressField.placeholderString = "Address"
         addressField.isSelectable = true   // copyable even while read-only
         addressField.delegate = self
+        // The page in front's menu, as its tab and its app in the rail have; nothing on the groups list.
+        addressField.pageMenu = { [weak self] in
+            guard let self, let pane = self.currentWebsitePane else { return nil }
+            return self.contentVC.pageMenu(for: pane)
+        }
+        addressField.editingMenuItems = { [weak self] in
+            guard let self, let pane = self.currentWebsitePane else { return [] }
+            return self.contentVC.groupMenuItems(for: pane)
+        }
         applyAddressEditability()
 
         railVC.onSelect = { [weak self] in self?.selectApp($0) }

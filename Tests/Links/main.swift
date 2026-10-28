@@ -55,6 +55,16 @@ MainActor.assumeIsolated {
     perform(content.appMenu(for: "orgcs"), "Copy Link")
     check(board.string(forType: .string) == dashboard.absoluteString, "the rail\u{2019}s real menu copies the tab the app shows now (the second tab)")
 
+    // The rail's menu also offers Add to Group, for the page the app shows.
+    let railAdd = content.appMenu(for: "orgcs")?.items.first { $0.title == "Add to Group" }
+    check(railAdd?.submenu?.items.map(\.title) == ["New Group"], "the rail\u{2019}s menu has Add to Group (only New Group while there are no groups)")
+    perform(railAdd?.submenu, "New Group")
+    let madeFromRail = content.satelliteGroups.saved.first
+    check(madeFromRail?.members.map(\.url) == [dashboard], "Add to Group > New Group from the rail saves the page the app shows")
+    check(content.appMenu(for: "orgcs")?.items.first { $0.title == "Add to Group" }?.submenu?.items.first?.title == madeFromRail?.name,
+          "and the group it made is then offered in that menu")
+    if let made = madeFromRail { content.satelliteGroups.delete(made.id) }
+
     // The real tab bar of the content area: right-click its second tab.
     pump(0.3)
     let realTabs = content.view.subviews.compactMap { $0 as? TabBarView }.first.map { $0.subviews.flatMap(\.subviews).compactMap { $0 as? TabButton } } ?? []
@@ -63,6 +73,8 @@ MainActor.assumeIsolated {
     let firstTabMenu = realTabs.first?.menu(for: rightClick), secondTabMenu = realTabs.dropFirst().first?.menu(for: rightClick)
     check(realTabs.count == 2 && secondTabMenu?.items.contains { $0.title == "Close Tab" } == true && firstTabMenu?.items.contains { $0.title == "Close Tab" } == false,
           "the real tab bar: the second tab\u{2019}s menu has Close Tab, the app\u{2019}s own tab\u{2019}s doesn\u{2019}t")
+    let doubled = { (menu: NSMenu?) in zip(menu?.items ?? [], (menu?.items ?? []).dropFirst()).contains { $0.isSeparatorItem && $1.isSeparatorItem } }
+    check(!doubled(firstTabMenu) && !doubled(secondTabMenu), "no tab menu has two separators in a row")
     group.select(0)
     perform(secondTabMenu, "Copy Link")
     check(board.string(forType: .string) == dashboard.absoluteString, "Copy Link on a tab copies that tab, even when another tab is in front")
@@ -117,6 +129,33 @@ MainActor.assumeIsolated {
     let fixedButtons = railView?.subviews.compactMap { $0 as? RailButton } ?? []
     let inside = fixedButtons.allSatisfy { mainWindow.contentView!.bounds.contains($0.convert($0.bounds, to: nil)) }
     check(fixedButtons.count == 2 && inside, "the rail's Groups and Settings buttons are inside the window")
+
+    // The address bar's right-click menu: the page's own menu (with Add to Group), or, while typing in it, the
+    // usual text items followed by Add to Group. Nothing of a page's while the groups list is shown.
+    guard let addressBar = mainWindow.toolbar?.items.first(where: { $0.itemIdentifier == .addressBar })?.view as? AddressBar else {
+        return check(false, "the address bar is in the toolbar")
+    }
+    let rightClickBar = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: mainWindow.windowNumber,
+                                           context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    check(!(addressBar.field.menu(for: rightClickBar)?.items.contains { $0.title == "Add to Group" } ?? false), "on the groups list, the address bar offers no page items")
+    // An app in front, so the bar has a page: a local one, so nothing is fetched, and one whose address bar can be
+    // typed in, which is when the bar's menu is its field editor's.
+    UIRegistry.shared.configure(AppConfig(apps: [WebApp(id: "local", name: "Local", url: URL(string: "about:blank")!, symbol: "globe", editableAddress: true)], assistants: []))
+    pump(0.3)
+    controller.selectApp("local")
+    pump(0.3)
+    check(controller.currentWebsitePane != nil, "a page is in front for the address bar")
+    mainWindow.makeFirstResponder(nil)
+    let barMenu = addressBar.field.menu(for: rightClickBar)
+    check(barMenu?.items.contains { $0.title == "Copy Link" } == true && barMenu?.items.contains { $0.title == "Add to Group" } == true,
+          "right-clicking the address bar offers the page\u{2019}s Copy Link and Add to Group")
+    check(addressBar.menu(for: rightClickBar)?.items.contains { $0.title == "Add to Group" } == true, "\u{2026}as does right-clicking its icon or padding")
+    mainWindow.orderFrontRegardless()   // a text field only gets a field editor in a window that's on screen (this one is off to the side)
+    pump(0.5)                           // ...and the toolbar puts the bar into the window once it's shown
+    mainWindow.makeFirstResponder(addressBar.field)
+    let editingMenu = (addressBar.field.currentEditor() as? NSTextView)?.menu(for: rightClickBar)
+    check(editingMenu?.items.contains { $0.title == "Copy" } == true && editingMenu?.items.last?.title == "Add to Group",
+          "while it\u{2019}s being typed in, its menu keeps Copy and ends with Add to Group")
 }
 print(failures == 0 ? "\nAll link checks passed." : "\n\(failures) failed.")
 exit(failures == 0 ? 0 : 1)
