@@ -45,10 +45,12 @@ final class ContentViewController: NSViewController {
         tabBar.onSelect = { [weak self] in self?.selectedGroup?.select($0) }
         tabBar.onClose = { [weak self] in self?.selectedGroup?.close(at: $0) }
         tabBar.menuForTab = { [weak self] in self?.tabMenu(at: $0) }
+        tabBar.onChipClick = { [weak self] in self?.selectedGroup?.toggleCollapsed($0) }
+        tabBar.menuForChip = { [weak self] in self?.chipMenu(for: $0) }
         titleObserver = NotificationCenter.default.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let group = self?.selectedGroup, group.tabs.count > 1 else { return }
-                self?.tabBar.updateTitles(group.tabs.map(\.tabTitle))
+                guard let self, let group = self.selectedGroup, group.tabs.count > 1 else { return }
+                self.tabBar.show(group)
             }
         }
         view = root
@@ -83,14 +85,95 @@ final class ContentViewController: NSViewController {
         show(group)
     }
 
-    /// Right-click on a tab: its link, then Close Tab for the ones that can close.
+    /// Right-click on a tab: its link, Close Tab for the ones that can close, then its group.
     private func tabMenu(at index: Int) -> NSMenu? {
         guard let group = selectedGroup, group.tabs.indices.contains(index) else { return nil }
         var extra: [NSMenuItem] = []
         if index > 0 {
             extra.append(ClosureMenuItem(title: "Close Tab") { [weak group] in group?.close(at: index) })
         }
+        if index > 0 {
+            extra.append(.separator())
+            if let cluster = group.cluster(at: index) {
+                extra.append(ClosureMenuItem(title: "Remove from \u{201C}\(cluster.name)\u{201D}") { [weak group] in group?.leaveCluster(at: index) })
+            } else {
+                let item = NSMenuItem(title: "Add Tab to Group", action: nil, keyEquivalent: "")
+                item.submenu = addToGroupMenu(for: index, in: group)
+                extra.append(item)
+            }
+        }
         return PageLink.menu(for: group.tabs[index], window: view.window, extra: extra, pasteboard: linkPasteboard)
+    }
+
+    private func addToGroupMenu(for index: Int, in group: TabGroup) -> NSMenu {
+        let menu = NSMenu()
+        for cluster in group.clusters {
+            let item = ClosureMenuItem(title: cluster.name) { [weak group] in group?.join(index, to: cluster) }
+            item.image = Self.swatch(cluster.color)
+            menu.addItem(item)
+        }
+        if !group.clusters.isEmpty { menu.addItem(.separator()) }
+        let newGroup = NSMenuItem(title: "New Group", action: nil, keyEquivalent: "")
+        let colors = NSMenu()
+        for color in TabClusterColor.allCases {
+            let item = ClosureMenuItem(title: color.label) { [weak group] in
+                guard let group else { return }
+                group.newCluster(at: index, name: group.nextClusterName(), color: color)
+            }
+            item.image = Self.swatch(color)
+            colors.addItem(item)
+        }
+        newGroup.submenu = colors
+        menu.addItem(newGroup)
+        return menu
+    }
+
+    /// Right-click (or click, to toggle collapse) on a group's chip.
+    private func chipMenu(for cluster: TabCluster) -> NSMenu? {
+        guard let group = selectedGroup, group.clusters.contains(where: { $0.id == cluster.id }) else { return nil }
+        let menu = NSMenu()
+        menu.addItem(ClosureMenuItem(title: cluster.collapsed ? "Expand Group" : "Collapse Group") { [weak group] in group?.toggleCollapsed(cluster) })
+        menu.addItem(ClosureMenuItem(title: "Rename Group\u{2026}") { [weak self, weak group] in
+            guard let self, let group, let name = self.promptForGroupName(current: cluster.name) else { return }
+            group.rename(cluster, to: name)
+        })
+        let recolor = NSMenuItem(title: "Change Color", action: nil, keyEquivalent: "")
+        let colors = NSMenu()
+        for color in TabClusterColor.allCases {
+            let item = ClosureMenuItem(title: color.label) { [weak group] in group?.recolor(cluster, to: color) }
+            item.image = Self.swatch(color)
+            item.state = color == cluster.color ? .on : .off
+            colors.addItem(item)
+        }
+        recolor.submenu = colors
+        menu.addItem(recolor)
+        menu.addItem(.separator())
+        menu.addItem(ClosureMenuItem(title: "Ungroup Tabs") { [weak group] in group?.ungroup(cluster) })
+        menu.addItem(ClosureMenuItem(title: "Close Group") { [weak group] in group?.closeCluster(cluster) })
+        return menu
+    }
+
+    private func promptForGroupName(current: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = "Rename Group"
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: current)
+        field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// A small colored dot for a color's menu items (group picking and recoloring).
+    private static func swatch(_ color: TabClusterColor) -> NSImage {
+        NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+            color.nsColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
     }
 
     /// Right-click on an app in the rail: the link of the tab it shows (its own page, or another tab it opened).
@@ -128,7 +211,7 @@ final class ContentViewController: NSViewController {
         let several = group.tabs.count > 1
         tabBar.isHidden = !several
         tabBarHeight?.constant = several ? 34 : 0
-        if several { tabBar.show(titles: group.tabs.map(\.tabTitle), selected: group.selectedIndex) }
+        if several { tabBar.show(group) }
         view.window?.makeFirstResponder(current.webView)
     }
 }

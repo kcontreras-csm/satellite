@@ -2,12 +2,16 @@ import AppKit
 import Darwin
 
 /// Listens on a local Unix socket so `MCPStdioServer` — a tiny process an agent's MCP config spawns, such as Claude
-/// Code running in a Terminal assistant — can ask for the page open in Satellite's apps panel.
+/// Code running in a Terminal assistant — can read, click and type on the page open in Satellite's apps panel, or
+/// read every page in one of its tab groups (`TabCluster`) at once.
 ///
 /// Each asking agent (identified by its Terminal pane id, passed down as an environment variable when the pane
 /// starts) is confirmed once, the same way "Send to Assistant" confirms an assistant before a page reaches it:
-/// pages can hold customer data, and not every agent run outside Satellite is approved for it. "Don't ask again"
-/// remembers it exactly like that confirmation does, reusing the same trust store.
+/// pages can hold customer data, and not every agent run outside Satellite is approved for it. Reading and writing
+/// are trusted separately — allowing one never silently allows the other — and "Don't ask again" remembers each
+/// the same way that confirmation does, reusing the same trust store. There is no further gate per click or
+/// keystroke once an agent is trusted to write: that single confirmation is the control, so its wording says
+/// plainly what it grants.
 @MainActor
 final class MCPBridge {
     static let shared = MCPBridge()
@@ -29,7 +33,7 @@ final class MCPBridge {
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(size)) }
         }
         guard bound == 0, listen(fd, 4) == 0 else { close(fd); return }
-        chmod(path, 0o600)   // this user only; the socket carries page content and a pane id
+        chmod(path, 0o600)   // this user only; the socket carries page content, page actions and a pane id
         listenFD = fd
         queue.async { [weak self] in self?.acceptLoop(fd) }
     }
@@ -57,29 +61,75 @@ final class MCPBridge {
         guard let controller = mainController else {
             return ["ok": false, "error": "Satellite\u{2019}s window isn\u{2019}t available yet."]
         }
+        let action = request["action"] as? String ?? "read"
         let paneID = request["paneId"] as? String ?? ""
         let label = AppsModel.shared.config.assistants.first(where: { $0.id == paneID })?.name ?? "A command-line agent"
-        let trustID = "mcp:\(paneID)"
+        let kind: Kind = ["click", "type"].contains(action) ? .write : .read
+        let trustID = "\(kind.trustPrefix):\(paneID)"
         if !trust.isTrusted(trustID) {
-            let answer = await Self.confirm(label: label, window: controller.window)
-            guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to read this page."] }
+            let answer = await Self.confirm(kind, label: label, window: controller.window)
+            guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to \(kind.declinedVerb) this page."] }
             if answer.remember { trust.set(trustID, trusted: true) }
         }
         guard let pane = controller.currentWebsitePane, pane.didCreateView, pane.webView.url != nil else {
-            return ["ok": false, "error": "There is no page open in Satellite to read."]
+            return ["ok": false, "error": "There is no page open in Satellite to \(kind.declinedVerb)."]
         }
         do {
-            let text = try await PageSnapshot.capture(pane.webView, options: .init(forAssistant: true))
-            return ["ok": true, "text": text]
+            switch action {
+            case "read":
+                let text = try await PageSnapshot.capture(pane.webView, options: .init(forAssistant: true))
+                return ["ok": true, "text": text]
+            case "readGroup":
+                guard let name = request["group"] as? String, !name.isEmpty else {
+                    return ["ok": false, "error": "A group name is required."]
+                }
+                guard let tabGroup = pane.tabHost, let cluster = tabGroup.cluster(named: name) else {
+                    return ["ok": false, "error": "No open tab group named \u{201C}\(name)\u{201D} in the app shown now."]
+                }
+                let members = tabGroup.panes(in: cluster).filter { $0.didCreateView && $0.webView.url != nil }
+                guard !members.isEmpty else { return ["ok": false, "error": "That group has no loaded pages in it."] }
+                var sections: [String] = []
+                for member in members {
+                    sections.append(try await PageSnapshot.capture(member.webView, options: .init(forAssistant: true)))
+                }
+                return ["ok": true, "text": sections.joined(separator: "\n---\n\n")]
+            case "click":
+                guard let selector = request["selector"] as? String, !selector.isEmpty else {
+                    return ["ok": false, "error": "A selector is required."]
+                }
+                let found = try await PageInteraction.click(pane.webView, selector: selector)
+                return found ? ["ok": true, "text": "Clicked \(selector)."] : ["ok": false, "error": "No element matched \(selector)."]
+            case "type":
+                guard let selector = request["selector"] as? String, !selector.isEmpty, let text = request["text"] as? String else {
+                    return ["ok": false, "error": "A selector and text are required."]
+                }
+                let pressEnter = request["pressEnter"] as? Bool ?? false
+                let found = try await PageInteraction.type(pane.webView, selector: selector, text: text, pressEnter: pressEnter)
+                return found ? ["ok": true, "text": "Typed into \(selector)\(pressEnter ? " and pressed Enter" : "")."] : ["ok": false, "error": "No element matched \(selector)."]
+            default:
+                return ["ok": false, "error": "Unknown action \u{201C}\(action)\u{201D}."]
+            }
         } catch {
             return ["ok": false, "error": error.localizedDescription]
         }
     }
 
-    private static func confirm(label: String, window: NSWindow?) async -> AssistantSender.Answer {
+    private enum Kind {
+        case read, write
+        var trustPrefix: String { switch self { case .read: return "mcp-read"; case .write: return "mcp-write" } }
+        var declinedVerb: String { switch self { case .read: return "read"; case .write: return "act on" } }
+    }
+
+    private static func confirm(_ kind: Kind, label: String, window: NSWindow?) async -> AssistantSender.Answer {
         let alert = NSAlert()
-        alert.messageText = "Let \(label) read this page?"
-        alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read the page open in the apps panel \u{2014} its URL, title and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.current.summary) (change this in Settings > General)."
+        switch kind {
+        case .read:
+            alert.messageText = "Let \(label) read this page?"
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read the page open in the apps panel \u{2014} its URL, title and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.current.summary) (change this in Settings > General)."
+        case .write:
+            alert.messageText = "Let \(label) click and type on this page?"
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to click and type on the page open in the apps panel \u{2014} which can submit forms and change data, including in Salesforce. This isn\u{2019}t limited to one field or action: once allowed, it can act anywhere on the page without asking again. Only allow agents you trust with that."
+        }
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Deny")
         alert.showsSuppressionButton = true

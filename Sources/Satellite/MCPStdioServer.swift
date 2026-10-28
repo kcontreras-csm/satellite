@@ -2,10 +2,38 @@ import Darwin
 import Foundation
 
 /// A tiny MCP (Model Context Protocol) server over stdio. An agent's MCP config spawns one of these per session
-/// (`satellite --mcp-stdio`); it has no AppKit or WebKit of its own and offers exactly one tool, `read_active_page`,
-/// which it relays over `MCPSocket` to the Satellite app already running. That app captures the page the same way
-/// "Send to Assistant" does, and asks the user once per agent before sharing anything — see `MCPBridge`.
+/// (`satellite --mcp-stdio`); it has no AppKit or WebKit of its own and relays each tool call over `MCPSocket` to
+/// the Satellite app already running, which carries it out on the page open in the apps panel and asks the user
+/// once per agent before any of it happens — see `MCPBridge`.
 enum MCPStdioServer {
+    private static let tools: [[String: Any]] = [
+        [
+            "name": "read_active_page",
+            "description": "Reads the page open in Satellite\u{2019}s apps panel (not this terminal): its URL, title and visible content as Markdown, including a list of clickable elements with selectors for click_element and type_text. Satellite asks the user once per agent before sharing it, the same as \u{201C}Send to Assistant\u{201D}.",
+            "inputSchema": ["type": "object", "properties": [String: Any]()],
+        ],
+        [
+            "name": "click_element",
+            "description": "Clicks an element on the page open in Satellite\u{2019}s apps panel. `selector` is one from read_active_page’s “Interactive elements” (plain CSS, with `>>` where it crosses into a shadow root). Main frame only. Satellite asks the user once per agent before any agent can click or type on the page — a separate, stronger confirmation than reading.",
+            "inputSchema": ["type": "object", "required": ["selector"],
+                             "properties": ["selector": ["type": "string", "description": "A selector from read_active_page’s Interactive elements."]]],
+        ],
+        [
+            "name": "type_text",
+            "description": "Replaces the content of a field (or contenteditable element) on the page open in Satellite’s apps panel with `text`, optionally pressing Enter afterward (which also submits its form, if it has one). `selector` is one from read_active_page’s “Interactive elements”. Main frame only.",
+            "inputSchema": ["type": "object", "required": ["selector", "text"],
+                             "properties": ["selector": ["type": "string", "description": "A selector from read_active_page’s Interactive elements."],
+                                            "text": ["type": "string", "description": "Replaces the field’s current content."],
+                                            "pressEnter": ["type": "boolean", "description": "Press Enter after typing (default false)."]]],
+        ],
+        [
+            "name": "read_tab_group",
+            "description": "Reads every open tab in a named tab group (Satellite\u{2019}s Chrome-style groups: a colored chip plus the tabs grouped under it) in the app shown now \u{2014} each as the same Markdown read_active_page returns, concatenated, so an agent can search across several related pages at once. `group` is the group\u{2019}s name as shown on its chip in the tab bar.",
+            "inputSchema": ["type": "object", "required": ["group"],
+                             "properties": ["group": ["type": "string", "description": "A tab group\u{2019}s name, as shown on its chip in Satellite\u{2019}s tab bar."]]],
+        ],
+    ]
+
     static func run() -> Never {
         while let line = Swift.readLine(strippingNewline: true) {
             guard !line.isEmpty, let data = line.data(using: .utf8),
@@ -21,17 +49,11 @@ enum MCPStdioServer {
             case "notifications/initialized":
                 break   // a notification: no reply expected or sent
             case "tools/list":
-                respond(id, ["tools": [[
-                    "name": "read_active_page",
-                    "description": "Reads the page open in Satellite\u{2019}s apps panel (not this terminal): its URL, title and visible content as Markdown. Satellite asks the user once per agent before sharing it, the same as \u{201C}Send to Assistant\u{201D}.",
-                    "inputSchema": ["type": "object", "properties": [String: Any]()],
-                ] as [String: Any]]])
+                respond(id, ["tools": tools])
             case "tools/call":
                 let params = message["params"] as? [String: Any] ?? [:]
-                guard params["name"] as? String == "read_active_page" else {
-                    respond(id, ["content": [["type": "text", "text": "Unknown tool."]], "isError": true]); break
-                }
-                switch readActivePage() {
+                let arguments = params["arguments"] as? [String: Any] ?? [:]
+                switch callBridge(tool: params["name"] as? String ?? "", arguments: arguments) {
                 case .success(let text): respond(id, ["content": [["type": "text", "text": text]], "isError": false])
                 case .failure(let failure): respond(id, ["content": [["type": "text", "text": failure.message]], "isError": true])
                 }
@@ -55,27 +77,36 @@ enum MCPStdioServer {
 
     // MARK: - Talking to the running app
 
-    private struct ReadFailure: Error { let message: String }
+    private struct BridgeFailure: Error { let message: String }
 
-    private static func readActivePage() -> Result<String, ReadFailure> {
+    private static func callBridge(tool: String, arguments: [String: Any]) -> Result<String, BridgeFailure> {
+        var request = arguments
+        switch tool {
+        case "read_active_page": request["action"] = "read"
+        case "click_element": request["action"] = "click"
+        case "type_text": request["action"] = "type"
+        case "read_tab_group": request["action"] = "readGroup"
+        default: return .failure(BridgeFailure(message: "Unknown tool \u{201C}\(tool)\u{201D}."))
+        }
+        request["paneId"] = ProcessInfo.processInfo.environment["SATELLITE_MCP_PANE_ID"] ?? ""
+
         guard var addr = MCPSocket.address(for: MCPSocket.path) else {
-            return .failure(ReadFailure(message: "Satellite\u{2019}s data path is too long for a socket."))
+            return .failure(BridgeFailure(message: "Satellite\u{2019}s data path is too long for a socket."))
         }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return .failure(ReadFailure(message: "Could not open a local socket.")) }
+        guard fd >= 0 else { return .failure(BridgeFailure(message: "Could not open a local socket.")) }
         defer { close(fd) }
         let size = MemoryLayout<sockaddr_un>.size
         let connected = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(size)) }
         }
-        guard connected == 0 else { return .failure(ReadFailure(message: "Satellite isn\u{2019}t running. Open it, then try again.")) }
+        guard connected == 0 else { return .failure(BridgeFailure(message: "Satellite isn\u{2019}t running. Open it, then try again.")) }
 
-        let paneID = ProcessInfo.processInfo.environment["SATELLITE_MCP_PANE_ID"] ?? ""
-        MCPSocket.sendLine(["paneId": paneID], to: fd)
+        MCPSocket.sendLine(request, to: fd)
         guard let response = MCPSocket.receiveLine(from: fd) else {
-            return .failure(ReadFailure(message: "Satellite closed the connection without answering."))
+            return .failure(BridgeFailure(message: "Satellite closed the connection without answering."))
         }
         if response["ok"] as? Bool == true, let text = response["text"] as? String { return .success(text) }
-        return .failure(ReadFailure(message: response["error"] as? String ?? "Satellite declined the request."))
+        return .failure(BridgeFailure(message: response["error"] as? String ?? "Satellite declined the request."))
     }
 }
