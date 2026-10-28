@@ -105,15 +105,15 @@ It always starts through your login shell, interactive, so your PATH and profile
 
 Reading (`list_open_pages`, `read_page`, `read_active_page`, `read_tab_group`) and writing (`click_element`, `type_text`) are confirmed separately — allowing one never allows the other. The first time a given terminal's agent calls either kind, Satellite asks you to allow or deny it, with "Don't ask again for \<name\>": for reading, the same reasoning as sending a page to an assistant (pages can hold customer data, and not every agent is approved for it), and it says plainly that the agent can read every open page, not only the one in front; for writing, a stronger one, since once allowed an agent can click and type anywhere on the page without asking again, which can submit forms and change data, including in Salesforce. Allowing is remembered per terminal entry; add a new terminal (so it needs its own allow) rather than reusing one that's already trusted if you want to keep agents apart.
 
-To connect Claude Code to it, point its MCP config at Satellite with `--mcp-stdio`:
+To connect Claude Code to it, use **Satellite > Install MCP Server**: **Copy Claude Code Command** copies a command to run in a terminal, and **Copy JSON Config** copies the same thing for a `.mcp.json` file (or any MCP client whose config takes that shape). Both point at the Satellite you're running, by its full path — the installed app, or `.build/debug/Satellite` when run with `swift run` — and look like this:
 
-    claude mcp add satellite -- /Applications/Satellite.app/Contents/MacOS/Satellite --mcp-stdio
+    claude mcp add --scope user satellite -- '/Applications/Satellite.app/Contents/MacOS/Satellite' --mcp-stdio
 
-or, in `.mcp.json`:
+    { "mcpServers": { "satellite": { "args": ["--mcp-stdio"], "command": "/Applications/Satellite.app/Contents/MacOS/Satellite", "type": "stdio" } } }
 
-    { "mcpServers": { "satellite": { "command": "/Applications/Satellite.app/Contents/MacOS/Satellite", "args": ["--mcp-stdio"] } } }
+The command uses `--scope user`, so Satellite is there in every Claude Code session, whichever folder a terminal starts in (the default, `local`, is only the folder it's run in).
 
-`--mcp-stdio` only works while Satellite itself is already running (it relays to it over a Unix socket at `~/Library/Application Support/Satellite/mcp.sock`) and only answers with a real page from inside a Satellite terminal, which sets `SATELLITE_MCP_PANE_ID` for whatever it runs so the allow/deny above is asked per terminal entry, not once for every agent anywhere. Run from a `swift run` checkout, use `.build/debug/Satellite --mcp-stdio` instead of the path above.
+`--mcp-stdio` only works while Satellite itself is running (it relays to it over a Unix socket at `~/Library/Application Support/Satellite/mcp.sock`). Inside a Satellite terminal, it knows which terminal entry is asking (Satellite sets `SATELLITE_MCP_PANE_ID` for whatever runs there), so the allow/deny above is asked, and remembered, per terminal entry. Run anywhere else, it's "a command-line agent", and one approval covers every agent started outside Satellite.
 
 `scripts/test-terminal.sh` checks all of this against your real login shell (without touching your clipboard). SwiftTerm's license is in `THIRD_PARTY_NOTICES.md`, which the bundled app includes.
 

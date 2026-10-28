@@ -137,6 +137,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case nil: menu.addItem(.separator())
             case "@apps": add(commands(in: "Apps", source: .sidebar), to: menu)
             case "@assistants": add(commands(in: "Assistants", source: .sidebar), to: menu)
+            case "@mcp":
+                let install = NSMenu(title: MenuLayout.mcpTitle)
+                add(MenuLayout.mcp, to: install)
+                menu.addItem(submenu(install))
             case let id?: add([id], to: menu)
             }
         }

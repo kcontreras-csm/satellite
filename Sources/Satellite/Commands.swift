@@ -14,7 +14,7 @@ struct AppActions {
 /// sidebar's items, which come and go.
 enum MenuLayout {
     static let app: [String?] = [
-        "app.about", "app.updates", nil, "app.settings", nil,
+        "app.about", "app.updates", nil, "app.settings", "@mcp", nil,
         "app.hide", "app.hideOthers", "app.showAll", nil, "app.quit",
     ]
     static let file: [String?] = [
@@ -37,6 +37,9 @@ enum MenuLayout {
     static let window: [String?] = [
         "window.minimize", "window.zoom", nil, "window.front",
     ]
+    /// The "@mcp" submenu of the app menu.
+    static let mcpTitle = "Install MCP Server"
+    static let mcp = ["mcp.copyClaudeCommand", "mcp.copyJSON"]
 }
 
 /// Every command of the app, each with the shortcut it starts out with. What the user changes is kept by
@@ -87,6 +90,15 @@ enum BuiltInCommands {
             command("app.about", "About \(name)", "App", fixed: true, .responder(#selector(NSApplication.orderFrontStandardAboutPanel(_:)))),
             command("app.updates", "Check for Updates\u{2026}", "App", run(app.checkForUpdates)),
             command("app.settings", "Settings\u{2026}", "App", key: "Cmd+,", fixed: true, run(app.openSettings)),
+            // Under Satellite > Install MCP Server (see "@mcp" in MenuLayout).
+            command("mcp.copyClaudeCommand", "Copy Claude Code Command", "MCP", run {
+                MCPInstall.copy(MCPInstall.claudeCommand())
+                Toast.show("Copied. Run it in a terminal to add Satellite to Claude Code.", in: window.window)
+            }),
+            command("mcp.copyJSON", "Copy JSON Config", "MCP", run {
+                MCPInstall.copy(MCPInstall.json())
+                Toast.show("Copied. Paste it into .mcp.json, or merge its \u{201C}satellite\u{201D} entry into an existing mcpServers.", in: window.window)
+            }),
             command("app.hide", "Hide \(name)", "App", key: "Cmd+H", fixed: true, .responder(#selector(NSApplication.hide(_:)))),
             command("app.hideOthers", "Hide Others", "App", key: "Cmd+Alt+H", fixed: true, .responder(#selector(NSApplication.hideOtherApplications(_:)))),
             command("app.showAll", "Show All", "App", fixed: true, .responder(#selector(NSApplication.unhideAllApplications(_:)))),

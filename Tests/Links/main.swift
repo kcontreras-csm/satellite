@@ -116,6 +116,28 @@ MainActor.assumeIsolated {
     check(copyItem?.title == "Copy Link" && copyItem?.keyEquivalent == "l" && copyItem?.keyEquivalentModifierMask == [.command, .shift], "File > Copy Link keeps \u{21E7}\u{2318}L")
     check(withTitle?.title == "Copy Link with Title" && withTitle?.keyEquivalent == "" && MenuLayout.file.contains("page.copyLinkWithTitle"), "File > Copy Link with Title, with no shortcut until you give it one")
 
+    // Satellite > Install MCP Server: the two forms of "start this Satellite with --mcp-stdio".
+    check(MenuLayout.app.contains("@mcp") && MenuLayout.mcpTitle == "Install MCP Server"
+          && MenuLayout.mcp.compactMap { registry.menuItem(for: $0)?.title } == ["Copy Claude Code Command", "Copy JSON Config"],
+          "Satellite > Install MCP Server has Copy Claude Code Command and Copy JSON Config")
+    let awkward = "/Applications/My Tools/Kevin's Satellite.app/Contents/MacOS/Satellite"
+    let command = MCPInstall.claudeCommand(executable: awkward)
+    check(command.hasPrefix("claude mcp add --scope user satellite -- ") && command.hasSuffix(" --mcp-stdio"), "the command adds it at user scope: \(command)")
+    let shell = Process(), out = Pipe()
+    shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+    shell.arguments = ["-c", "set -- \(command); printf '%s|%s|%s' \"$6\" \"$8\" \"$9\""]   // name, executable, flag, as a shell splits it
+    shell.standardOutput = out
+    try? shell.run(); shell.waitUntilExit()
+    check(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "satellite|\(awkward)|--mcp-stdio",
+          "a shell reads the command's path back whole, spaces and apostrophe included")
+    let parsed = (try? JSONSerialization.jsonObject(with: Data(MCPInstall.json(executable: awkward).utf8))) as? [String: Any]
+    let entry = (parsed?["mcpServers"] as? [String: Any])?["satellite"] as? [String: Any]
+    check(entry?["command"] as? String == awkward && entry?["args"] as? [String] == ["--mcp-stdio"] && entry?["type"] as? String == "stdio",
+          "the JSON config names the same executable and flag")
+    check(MCPInstall.claudeCommand().contains(MCPInstall.executable) && MCPInstall.executable.hasPrefix("/"), "both point at the Satellite that's running, by full path")
+    MCPInstall.copy(command, to: board)
+    check(board.string(forType: .string) == command, "copying puts exactly that text on the pasteboard")
+
     // The main window keeps the size it's given. Nothing in it (such as the Groups view, which is in it from
     // launch) may require more room than a screen has: that grew the window past the screen's bottom edge,
     // hiding the rail's Groups and Settings buttons and pinning it to the top.

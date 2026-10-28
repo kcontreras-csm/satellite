@@ -1,5 +1,30 @@
+import AppKit
 import Darwin
 import Foundation
+
+/// What to give an MCP client so it can start `MCPStdioServer`: this very Satellite (wherever it's installed, or the
+/// build being run) with `--mcp-stdio`. Satellite > Install MCP Server copies either form.
+enum MCPInstall {
+    static var executable: String { Bundle.main.executablePath ?? CommandLine.arguments[0] }
+
+    /// For Claude Code's CLI, at user scope: the default scope is the folder it's run in, and a Satellite terminal
+    /// can start anywhere.
+    static func claudeCommand(executable: String = executable) -> String {
+        "claude mcp add --scope user satellite -- \(TerminalPane.quoted(executable)) --mcp-stdio"
+    }
+
+    /// For a `.mcp.json` file, or any client whose config takes the same shape.
+    static func json(executable: String = executable) -> String {
+        let config = ["mcpServers": ["satellite": ["type": "stdio", "command": executable, "args": ["--mcp-stdio"]] as [String: Any]]]
+        guard let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
 
 /// A tiny MCP (Model Context Protocol) server over stdio. An agent's MCP config spawns one of these per session
 /// (`satellite --mcp-stdio`); it has no AppKit or WebKit of its own and relays each tool call over `MCPSocket` to
