@@ -107,10 +107,59 @@ struct StoreConfig: Codable, Hashable {
     static let `default` = StoreConfig()
 }
 
+/// A tab group's color, from a fixed palette (so it's easy to pick from a menu and survives in config.json).
+enum GroupColor: String, Codable, CaseIterable {
+    case gray, blue, red, orange, yellow, green, pink, purple
+
+    var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+}
+
+/// A Satellite tab group: pages from any apps or addresses, kept together under a name. It is saved whether or
+/// not its pages are loaded; see `SatelliteGroups` for loading.
+///
+///     { "id": "…", "name": "Case 476168508", "color": "blue",
+///       "members": [{ "id": "…", "name": "OrgCS", "url": "https://orgcs.lightning.force.com/…", "appID": "orgcs" }] }
+struct SavedGroup: Codable, Hashable, Identifiable {
+    var id: String
+    var name: String
+    var color: GroupColor
+    var members: [GroupMember]
+
+    init(id: String = UUID().uuidString, name: String, color: GroupColor, members: [GroupMember]) {
+        self.id = id
+        self.name = name
+        self.color = color
+        self.members = members
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, color, members }
+
+    // A color this version doesn't know (edited by hand, or from a newer one) is gray, not an unreadable file.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        color = (try? container.decode(GroupColor.self, forKey: .color)) ?? .gray
+        members = try container.decodeIfPresent([GroupMember].self, forKey: .members) ?? []
+    }
+}
+
+/// One page of a tab group: the address it opens at (not wherever it was navigated to later, which can be a
+/// sign-in redirect carrying a token).
+struct GroupMember: Codable, Hashable, Identifiable {
+    var id: String = UUID().uuidString
+    var name: String
+    var url: URL
+    /// The app it was added from, for its icon; nil for an address typed in.
+    var appID: String?
+}
+
 struct AppConfig: Codable {
     var apps: [WebApp]
     var assistants: [WebApp]
     var store: StoreConfig?
+    /// Tab groups; nil (left out of config.json) when there are none.
+    var groups: [SavedGroup]?
 
     var effectiveStore: StoreConfig { store ?? .default }
 

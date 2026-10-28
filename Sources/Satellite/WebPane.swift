@@ -12,6 +12,9 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
     private(set) var homeURL: URL?
     /// Names this page for Satellite's local MCP server (`list_open_pages`, `read_page`) for as long as it's open.
     let pageID = String(UUID().uuidString.prefix(8)).lowercased()
+    /// The saved page of a tab group this tab is (`GroupMember.id`); nil for an app's tab, or a tab a group's page
+    /// opened that hasn't been kept in the group.
+    var groupMemberID: String?
     var onClose: (() -> Void)?
     /// The tab group this pane belongs to, for panes of the apps rail.
     weak var tabHost: TabGroup?

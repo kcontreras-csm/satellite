@@ -75,7 +75,9 @@ MainActor.assumeIsolated {
     let bar = TabBarView(frame: .zero)
     var asked: [Int] = []
     bar.menuForTab = { index in asked.append(index); return NSMenu(title: "tab \(index)") }
-    bar.show(titles: ["OrgCS", "Search | Splunk"], selected: 1)
+    let barTabs = TabGroup(name: "OrgCS", url: URL(string: "https://example.com/")!, opensAllLinksInTabs: false)
+    _ = barTabs.openTab(configuration: WebEnvironment.makeConfiguration())   // a second tab, selected
+    bar.show(barTabs)
     let tabButtons = bar.subviews.flatMap(\.subviews).compactMap { $0 as? TabButton }
     check(tabButtons.count == 2 && tabButtons[1].menu(for: click)?.title == "tab 1" && asked == [1], "right-clicking a tab asks for that tab\u{2019}s menu")
     let rail = RailViewController()
@@ -101,6 +103,20 @@ MainActor.assumeIsolated {
     let copyItem = registry.menuItem(for: "page.copyAddress"), withTitle = registry.menuItem(for: "page.copyLinkWithTitle")
     check(copyItem?.title == "Copy Link" && copyItem?.keyEquivalent == "l" && copyItem?.keyEquivalentModifierMask == [.command, .shift], "File > Copy Link keeps \u{21E7}\u{2318}L")
     check(withTitle?.title == "Copy Link with Title" && withTitle?.keyEquivalent == "" && MenuLayout.file.contains("page.copyLinkWithTitle"), "File > Copy Link with Title, with no shortcut until you give it one")
+
+    // The main window keeps the size it's given. Nothing in it (such as the Groups view, which is in it from
+    // launch) may require more room than a screen has: that grew the window past the screen's bottom edge,
+    // hiding the rail's Groups and Settings buttons and pinning it to the top.
+    guard let mainWindow = controller.window else { return }
+    mainWindow.setFrame(NSRect(x: -4000, y: 100, width: 1100, height: 640), display: true)
+    pump(0.5)
+    controller.showGroupsList()
+    pump(0.5)
+    check(mainWindow.frame.size == NSSize(width: 1100, height: 640), "the main window keeps the size it's given, Groups view shown: \(mainWindow.frame.size)")
+    let railView = (mainWindow.contentViewController as? NSSplitViewController)?.splitViewItems.first?.viewController.view
+    let fixedButtons = railView?.subviews.compactMap { $0 as? RailButton } ?? []
+    let inside = fixedButtons.allSatisfy { mainWindow.contentView!.bounds.contains($0.convert($0.bounds, to: nil)) }
+    check(fixedButtons.count == 2 && inside, "the rail's Groups and Settings buttons are inside the window")
 }
 print(failures == 0 ? "\nAll link checks passed." : "\n\(failures) failed.")
 exit(failures == 0 ? 0 : 1)

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
@@ -129,7 +130,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// True while a New Tab's blank address field is editable only because of that (the setting itself is off);
     /// cleared, and the field re-locked, once that one address is committed or cancelled.
     private var isTemporaryAddressEdit = false
-    private var groupsBrowser: GroupsBrowserWindowController?
     let assistantSender = AssistantSender()
 
     init(openSettings: @escaping () -> Void) {
@@ -181,7 +181,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         railVC.onSelect = { [weak self] in self?.selectApp($0) }
         railVC.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
         railVC.onOpenSettings = openSettings
-        railVC.onOpenGroups = { [weak self] in self?.showGroupsBrowser() }
+        railVC.onOpenGroups = { [weak self] in self?.showGroupsList() }
+        contentVC.onSelectionChange = { [weak self] in self?.selectionChanged() }
+        let groupsList = NSHostingView(rootView: GroupsListView(
+            model: .shared, groups: contentVC.satelliteGroups, open: { [weak self] in self?.openGroup($0) }))
+        // By default a hosting view turns its content's minimum size into required constraints. The list's is
+        // taller than a screen, which made the window grow past the screen's bottom edge (hiding the rail's
+        // Groups and Settings buttons) and pinned it to the top. It just fills whatever room the content area has.
+        groupsList.sizingOptions = []
+        contentVC.setGroupsList(groupsList)
 
         contentVC.view.postsFrameChangedNotifications = true
         let center = NotificationCenter.default
@@ -246,24 +254,56 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         railVC.setItems(apps)
         assistantsVC.setItems(registry.items(.assistants))
 
-        if let current = contentVC.selectedID, let item = apps.first(where: { $0.id == current }) {
-            railVC.setSelected(current)
-            window?.title = item.name
-            applyAddressEditability()   // its "Allow editing the address bar" may have just changed in Settings
-        } else {
+        switch contentVC.selection {
+        case .app(let current) where apps.contains(where: { $0.id == current }):
+            selectionChanged()   // its name, or its "Allow editing the address bar", may have just changed in Settings
+        case .groupsList, .group:
+            selectionChanged()   // still showing groups; an app being edited mustn't pull the view away from them
+        default:
             let saved = UserDefaults.standard.string(forKey: "lastSelectedAppID")
             selectApp(apps.first { $0.id == saved }?.id ?? apps.first?.id)
         }
     }
 
     func selectApp(_ id: String?) {
-        guard let id, let item = registry.items(.apps).first(where: { $0.id == id }) else { return }
+        guard let id, registry.items(.apps).contains(where: { $0.id == id }) else { return }
         contentVC.select(id)
-        railVC.setSelected(id)
-        window?.title = item.name
         UserDefaults.standard.set(id, forKey: "lastSelectedAppID")
+        selectionChanged()
+    }
+
+    /// Groups in the rail: the list of tab groups in place of the pages.
+    func showGroupsList() {
+        contentVC.showGroupsList()
+        selectionChanged()
+    }
+
+    /// Shows a tab group's pages, loading it first if it isn't.
+    func openGroup(_ id: String) {
+        if contentVC.openGroup(id) { selectionChanged() }
+    }
+
+    /// The rail, the title and the toolbar follow whatever the content area shows now.
+    private func selectionChanged() {
+        switch contentVC.selection {
+        case .app(let id):
+            railVC.setGroupsSelected(false)
+            railVC.setSelected(id)
+            window?.title = registry.items(.apps).first { $0.id == id }?.name ?? ""
+        case .groupsList:
+            railVC.setSelected(nil)
+            railVC.setGroupsSelected(true)
+            window?.title = "Tab Groups"
+        case .group(let id):
+            railVC.setSelected(nil)
+            railVC.setGroupsSelected(true)
+            window?.title = contentVC.satelliteGroups.group(id)?.name ?? "Tab Groups"
+        case nil:
+            break
+        }
         window?.toolbar?.validateVisibleItems()
         applyAddressEditability()
+        refreshAddressField()
     }
 
     func showAssistant(_ id: String) {
@@ -471,15 +511,18 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// what Satellite's local MCP server (`MCPBridge`) shares with an agent that asks to read "the website".
     var currentWebsitePane: WebPane? { contentVC.selectedPane }
 
-    /// Every page open in Satellite: each app's tabs (rail order), then the web assistants (panel order).
+    /// Every page open in Satellite: each app's tabs (rail order), each loaded tab group's, then the web assistants.
     func openPages() -> [OpenPage] { contentVC.openPages + assistantsVC.openPages }
+
+    /// The saved tab groups and which are loaded, for `MCPBridge`.
+    var satelliteGroups: SatelliteGroups { contentVC.satelliteGroups }
 
     /// The page with this `pageID`, whichever app or assistant it's in.
     func page(withID id: String) -> OpenPage? {
         openPages().first { $0.pane.pageID == id.lowercased() }
     }
 
-    /// The current tab of the app or web assistant with this id or name (case-insensitive).
+    /// The current tab of the app, loaded tab group or web assistant with this id or name (case-insensitive).
     func currentPage(ofApp identifier: String) -> OpenPage? {
         openPages().first {
             $0.isCurrentTab && ($0.ownerID == identifier || $0.owner.localizedCaseInsensitiveCompare(identifier) == .orderedSame)
@@ -677,37 +720,5 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         }
         addressField.stringValue = ""
         window?.makeFirstResponder(addressField)
-    }
-
-    // MARK: Groups browser
-
-    func showGroupsBrowser() {
-        let browser = GroupsBrowserWindowController(
-            clusters: contentVC.allClusters,
-            onJump: { [weak self] appID, clusterID in
-                self?.selectApp(appID)
-                self?.contentVC.jumpToCluster(clusterID, in: appID)
-            },
-            onImport: { [weak self] tabs in self?.importChromeTabs(tabs) })
-        groupsBrowser = browser
-        browser.showWindow(nil)
-        browser.window?.makeKeyAndOrderFront(nil)
-    }
-
-    /// Opens each found tab in the app shown now, grouped together as one new cluster, so they're easy to review,
-    /// rename or ungroup afterward rather than scattering loose into the existing tabs.
-    private func importChromeTabs(_ tabs: [ChromeImport.FoundTab]) {
-        guard !tabs.isEmpty, let host = currentWebsitePane?.tabHost else { return }
-        var cluster: TabCluster?
-        for tab in tabs {
-            let pane = host.openTab(configuration: WebEnvironment.makeConfiguration())
-            pane.webView.load(URLRequest(url: tab.url))
-            guard let index = host.tabs.firstIndex(where: { $0 === pane }) else { continue }
-            if let cluster {
-                host.join(index, to: cluster)
-            } else {
-                cluster = host.newCluster(at: index, name: host.nextClusterName(base: "From Chrome"), color: .gray)
-            }
-        }
     }
 }

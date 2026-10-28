@@ -114,6 +114,16 @@ final class AppsModel: ObservableObject {
         UIRegistry.shared.configure(config)
     }
 
+    /// Edits the tab groups and saves them. Unlike apps, groups aren't in the sidebar, so the sidebar isn't
+    /// rebuilt (which would also move focus to the assistants panel).
+    func changeGroups(_ edit: (inout [SavedGroup]) -> Void) {
+        var groups = config.groups ?? []
+        edit(&groups)
+        config.groups = groups.isEmpty ? nil : groups
+        keepUnreadableFile()
+        config.save()
+    }
+
     /// If config.json could not be read when Satellite started, it was left alone; the first save would replace it,
     /// so a copy is kept next to it.
     private func keepUnreadableFile() {

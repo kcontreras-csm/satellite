@@ -1,81 +1,82 @@
 import AppKit
 import WebKit
 
-/// One page open in Satellite — an app's tab, or a web assistant — for the local MCP server to list and read.
+/// One page open in Satellite — an app's tab, a tab group's tab, or a web assistant — for the local MCP server.
 struct OpenPage {
+    enum Kind { case app, group, assistant }
+
     let pane: WebPane
-    /// The app's or assistant's name and id.
+    let kind: Kind
+    /// The app's, group's or assistant's name and id.
     let owner: String
     let ownerID: String
-    let isAssistant: Bool
-    /// The tab its app shows (an assistant has only the one).
+    /// The tab its app or group shows (an assistant has only the one).
     let isCurrentTab: Bool
-    /// The tab group it's in, if any.
-    let group: String?
     /// Whether it has ever loaded. An app that was never opened has no page yet, and listing or reading it
     /// mustn't load it (that could start a sign-in).
     var isLoaded: Bool { pane.didCreateView && pane.webView.url != nil }
 }
 
-/// Center area: one lazily loaded group of tabs per app, only the selected app's current tab visible.
+/// Center area: an app's tabs (one lazily loaded set per app), the list of tab groups, or a tab group's tabs.
+/// Only the current tab of what's selected is visible; every other loaded tab keeps running, hidden.
 final class ContentViewController: NSViewController {
+    enum Selection: Equatable {
+        case app(String)
+        case groupsList
+        case group(String)
+    }
+
     private var groups: [String: TabGroup] = [:]
     /// The apps' ids in rail order.
     private var order: [String] = []
-    private(set) var selectedID: String?
+    private(set) var selection: Selection?
+    let satelliteGroups = SatelliteGroups()
     private let tabBar = TabBarView()
     private let container = NSView()
+    private var groupsList: NSView?
     private var tabBarHeight: NSLayoutConstraint?
     private var titleObserver: NSObjectProtocol?
 
-    var selectedGroup: TabGroup? { selectedID.flatMap { groups[$0] } }
+    /// What's shown changed without MainWindowController asking (a shown group was unloaded or closed its last
+    /// tab, or its chip was clicked), so the rail, the title and the address bar can follow.
+    var onSelectionChange: (() -> Void)?
+
+    /// The selected app's id; nil while the groups list or a group is shown.
+    var selectedID: String? { if case .app(let id) = selection { return id } else { return nil } }
+    var shownGroupID: String? { if case .group(let id) = selection { return id } else { return nil } }
+    var selectedGroup: TabGroup? {
+        switch selection {
+        case .app(let id): return groups[id]
+        case .group(let id): return satelliteGroups.loaded[id]
+        case .groupsList, nil: return nil
+        }
+    }
     /// Where the tab and app menus copy links to.
     var linkPasteboard: NSPasteboard = .general
-    /// The page in front: the selected app's current tab.
+    /// The page in front: the current tab of the selected app or group; nil on the groups list.
     var selectedPane: WebPane? { selectedGroup?.current }
     var hasClosableTab: Bool { selectedGroup?.hasClosableTab ?? false }
 
-    /// A tab group, with which app it belongs to, for the Groups browser.
-    struct ClusterEntry: Identifiable {
-        var id: UUID { cluster.id }
-        let appID: String
-        let appName: String
-        let cluster: TabCluster
-        let tabCount: Int
-    }
+    /// Every app's and every loaded group's tabs, for hiding all but the one shown.
+    private var allTabs: [TabGroup] { Array(groups.values) + Array(satelliteGroups.loaded.values) }
 
-    /// Every tab group across every app, for the Groups browser. Groups stay where they are; this only lists them.
-    var allClusters: [ClusterEntry] {
-        var entries: [ClusterEntry] = []
-        for (appID, group) in groups {
-            for cluster in group.clusters {
-                let count = group.panes(in: cluster).count
-                entries.append(ClusterEntry(appID: appID, appName: group.home.name, cluster: cluster, tabCount: count))
-            }
-        }
-        return entries.sorted { $0.appName == $1.appName ? $0.cluster.name < $1.cluster.name : $0.appName < $1.appName }
-    }
-
-    /// Every tab of every app, apps in rail order and tabs in tab-bar order. Background tabs keep running and can
-    /// be read the same as the one in front; they just aren't what the window shows.
+    /// Every tab of every app (rail order), then of every loaded tab group (in the order they're listed).
+    /// Background tabs keep running and can be read the same as the one in front.
     var openPages: [OpenPage] {
         var pages: [OpenPage] = []
         for id in order {
             guard let group = groups[id] else { continue }
             for (index, pane) in group.tabs.enumerated() {
-                pages.append(OpenPage(pane: pane, owner: group.home.name, ownerID: id, isAssistant: false,
-                                      isCurrentTab: index == group.selectedIndex, group: group.cluster(at: index)?.name))
+                pages.append(OpenPage(pane: pane, kind: .app, owner: group.home.name, ownerID: id, isCurrentTab: index == group.selectedIndex))
+            }
+        }
+        for saved in satelliteGroups.saved {
+            guard let tabs = satelliteGroups.loaded[saved.id] else { continue }
+            for (index, pane) in tabs.tabs.enumerated() {
+                pages.append(OpenPage(pane: pane, kind: .group, owner: saved.name, ownerID: saved.id, isCurrentTab: index == tabs.selectedIndex))
             }
         }
         return pages
-    }
-
-    /// Switches to `appID` and brings `clusterID`'s tabs to the front: expands it if collapsed, and selects its
-    /// first tab. The caller (MainWindowController) has already called `selectApp`, which shows the app itself.
-    func jumpToCluster(_ clusterID: UUID, in appID: String) {
-        guard let group = groups[appID], let cluster = group.clusters.first(where: { $0.id == clusterID }) else { return }
-        if cluster.collapsed { group.toggleCollapsed(cluster) }
-        if let index = group.tabs.indices.first(where: { group.cluster(at: $0)?.id == clusterID }) { group.select(index) }
     }
 
     deinit {
@@ -106,19 +107,46 @@ final class ContentViewController: NSViewController {
         tabBar.onSelect = { [weak self] in self?.selectedGroup?.select($0) }
         tabBar.onClose = { [weak self] in self?.selectedGroup?.close(at: $0) }
         tabBar.menuForTab = { [weak self] in self?.tabMenu(at: $0) }
-        tabBar.onChipClick = { [weak self] in self?.selectedGroup?.toggleCollapsed($0) }
-        tabBar.menuForChip = { [weak self] in self?.chipMenu(for: $0) }
+        tabBar.onChipClick = { [weak self] in
+            self?.showGroupsList()
+            self?.onSelectionChange?()
+        }
         titleObserver = NotificationCenter.default.addObserver(forName: .webPaneStateChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let group = self.selectedGroup, group.tabs.count > 1 else { return }
-                self.tabBar.show(group)
+                guard let self, let group = self.selectedGroup else { return }
+                self.refreshTabBar(group)
             }
+        }
+
+        satelliteGroups.onTabsChanged = { [weak self] id, tabs in
+            guard let self else { return }
+            if self.shownGroupID == id { self.show(tabs) } else { self.attachHidden(tabs) }
+        }
+        satelliteGroups.onUnloaded = { [weak self] id in
+            guard let self, self.shownGroupID == id else { return }
+            self.showGroupsList()
+            self.onSelectionChange?()
         }
         view = root
     }
 
-    /// Follows the sidebar: creates tab groups for new items, drops groups of removed ones, and applies renames
-    /// and address changes. If the selected item disappeared nothing is selected until `select` is called.
+    /// The list of tab groups (a SwiftUI view), shown in place of the pages when Groups is selected in the rail.
+    func setGroupsList(_ list: NSView) {
+        groupsList?.removeFromSuperview()
+        list.translatesAutoresizingMaskIntoConstraints = false
+        list.isHidden = selection != .groupsList
+        container.addSubview(list)
+        NSLayoutConstraint.activate([
+            list.topAnchor.constraint(equalTo: container.topAnchor),
+            list.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            list.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        groupsList = list
+    }
+
+    /// Follows the sidebar: creates tab sets for new apps, drops those of removed ones, and applies renames and
+    /// address changes. If the selected app disappeared nothing is selected until `select` is called.
     func setItems(_ items: [SidebarItem]) {
         let ids = Set(items.map(\.id))
         order = items.map(\.id)
@@ -138,99 +166,90 @@ final class ContentViewController: NSViewController {
                 groups[item.id] = group
             }
         }
-        if let selectedID, !ids.contains(selectedID) { self.selectedID = nil }
+        if let selectedID, !ids.contains(selectedID) { selection = nil }
     }
 
     func select(_ id: String) {
         guard let group = groups[id] else { return }
-        selectedID = id
+        selection = .app(id)
         show(group)
     }
 
-    /// Right-click on a tab: its link, Close Tab for the ones that can close, then its group.
+    /// Shows the list of tab groups instead of any page.
+    func showGroupsList() {
+        selection = .groupsList
+        for set in allTabs {
+            for tab in set.tabs where tab.didCreateView { tab.webView.isHidden = true }
+        }
+        tabBar.isHidden = true
+        tabBarHeight?.constant = 0
+        groupsList?.isHidden = false
+        view.window?.makeFirstResponder(groupsList)
+        NotificationCenter.default.post(name: .webPaneStateChanged, object: nil)
+    }
+
+    /// Shows a tab group's tabs, loading it first if it isn't. Returns whether it could (a group needs a page).
+    @discardableResult
+    func openGroup(_ id: String) -> Bool {
+        guard let tabs = satelliteGroups.load(id) else { return false }
+        selection = .group(id)
+        show(tabs)
+        return true
+    }
+
+    /// Right-click on a tab: its link, Close Tab for the ones that can close, then groups.
     private func tabMenu(at index: Int) -> NSMenu? {
         guard let group = selectedGroup, group.tabs.indices.contains(index) else { return nil }
+        let pane = group.tabs[index]
         var extra: [NSMenuItem] = []
-        if index > 0 {
+        if group.canClose(index) {
             extra.append(ClosureMenuItem(title: "Close Tab") { [weak group] in group?.close(at: index) })
         }
-        if index > 0 {
-            extra.append(.separator())
-            if let cluster = group.cluster(at: index) {
-                extra.append(ClosureMenuItem(title: "Remove from \u{201C}\(cluster.name)\u{201D}") { [weak group] in group?.leaveCluster(at: index) })
+        extra.append(.separator())
+        if let groupID = group.savedGroupID, let saved = satelliteGroups.group(groupID) {
+            if let memberID = pane.groupMemberID {
+                extra.append(ClosureMenuItem(title: "Remove from \u{201C}\(saved.name)\u{201D}") { [weak self] in
+                    self?.satelliteGroups.remove(memberID: memberID, from: groupID)
+                })
             } else {
-                let item = NSMenuItem(title: "Add Tab to Group", action: nil, keyEquivalent: "")
-                item.submenu = addToGroupMenu(for: index, in: group)
-                extra.append(item)
+                // A tab one of the group's pages opened: here for now, kept only if asked.
+                extra.append(ClosureMenuItem(title: "Keep in \u{201C}\(saved.name)\u{201D}") { [weak self, weak pane] in
+                    guard let self, let pane else { return }
+                    self.satelliteGroups.keep(pane, in: groupID)
+                })
             }
+        } else {
+            let item = NSMenuItem(title: "Add to Group", action: nil, keyEquivalent: "")
+            item.submenu = addToGroupMenu(for: pane)
+            extra.append(item)
         }
-        return PageLink.menu(for: group.tabs[index], window: view.window, extra: extra, pasteboard: linkPasteboard)
+        return PageLink.menu(for: pane, window: view.window, extra: extra, pasteboard: linkPasteboard)
     }
 
-    private func addToGroupMenu(for index: Int, in group: TabGroup) -> NSMenu {
+    /// The groups an app's tab can be added to, and a new one. Adding copies the page's address into the group;
+    /// the tab itself stays in its app.
+    private func addToGroupMenu(for pane: WebPane) -> NSMenu {
         let menu = NSMenu()
-        for cluster in group.clusters {
-            let item = ClosureMenuItem(title: cluster.name) { [weak group] in group?.join(index, to: cluster) }
-            item.image = Self.swatch(cluster.color)
+        for saved in satelliteGroups.saved {
+            let item = ClosureMenuItem(title: saved.name) { [weak self, weak pane] in
+                guard let self, let pane, let member = SatelliteGroups.member(from: pane) else { return }
+                self.satelliteGroups.add(member, to: saved.id)
+                Toast.show("Added to \u{201C}\(saved.name)\u{201D}", in: self.view.window)
+            }
+            item.image = Self.swatch(saved.color)
             menu.addItem(item)
         }
-        if !group.clusters.isEmpty { menu.addItem(.separator()) }
-        let newGroup = NSMenuItem(title: "New Group", action: nil, keyEquivalent: "")
-        let colors = NSMenu()
-        for color in TabClusterColor.allCases {
-            let item = ClosureMenuItem(title: color.label) { [weak group] in
-                guard let group else { return }
-                group.newCluster(at: index, name: group.nextClusterName(), color: color)
-            }
-            item.image = Self.swatch(color)
-            colors.addItem(item)
-        }
-        newGroup.submenu = colors
-        menu.addItem(newGroup)
-        return menu
-    }
-
-    /// Right-click (or click, to toggle collapse) on a group's chip.
-    private func chipMenu(for cluster: TabCluster) -> NSMenu? {
-        guard let group = selectedGroup, group.clusters.contains(where: { $0.id == cluster.id }) else { return nil }
-        let menu = NSMenu()
-        menu.addItem(ClosureMenuItem(title: cluster.collapsed ? "Expand Group" : "Collapse Group") { [weak group] in group?.toggleCollapsed(cluster) })
-        menu.addItem(ClosureMenuItem(title: "Rename Group\u{2026}") { [weak self, weak group] in
-            guard let self, let group, let name = self.promptForGroupName(current: cluster.name) else { return }
-            group.rename(cluster, to: name)
+        if !satelliteGroups.saved.isEmpty { menu.addItem(.separator()) }
+        menu.addItem(ClosureMenuItem(title: "New Group") { [weak self, weak pane] in
+            guard let self, let pane, let member = SatelliteGroups.member(from: pane) else { return }
+            let saved = self.satelliteGroups.create(name: member.name, members: [member])
+            Toast.show("Added to a new group, \u{201C}\(saved.name)\u{201D}", in: self.view.window)
         })
-        let recolor = NSMenuItem(title: "Change Color", action: nil, keyEquivalent: "")
-        let colors = NSMenu()
-        for color in TabClusterColor.allCases {
-            let item = ClosureMenuItem(title: color.label) { [weak group] in group?.recolor(cluster, to: color) }
-            item.image = Self.swatch(color)
-            item.state = color == cluster.color ? .on : .off
-            colors.addItem(item)
-        }
-        recolor.submenu = colors
-        menu.addItem(recolor)
-        menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Ungroup Tabs") { [weak group] in group?.ungroup(cluster) })
-        menu.addItem(ClosureMenuItem(title: "Close Group") { [weak group] in group?.closeCluster(cluster) })
         return menu
     }
 
-    private func promptForGroupName(current: String) -> String? {
-        let alert = NSAlert()
-        alert.messageText = "Rename Group"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(string: current)
-        field.frame = NSRect(x: 0, y: 0, width: 220, height: 24)
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
-    }
-
-    /// A small colored dot for a color's menu items (group picking and recoloring).
-    private static func swatch(_ color: TabClusterColor) -> NSImage {
+    /// A small colored dot for a group's menu items.
+    static func swatch(_ color: GroupColor) -> NSImage {
         NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
             color.nsColor.setFill()
             NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
@@ -249,31 +268,47 @@ final class ContentViewController: NSViewController {
     @discardableResult func closeCurrentTab() -> Bool { selectedGroup?.closeCurrent() ?? false }
 
     func reloadAll() {
-        groups.values.forEach { $0.reloadAll() }
+        allTabs.forEach { $0.reloadAll() }
     }
 
-    /// Makes the group's current tab the only visible web view and shows the tab bar when there are several.
-    private func show(_ group: TabGroup) {
-        let current = group.current
-        for other in groups.values {
+    /// Puts a loaded group's tabs into the view, hidden, so they load and run as the other background tabs do.
+    private func attachHidden(_ set: TabGroup) {
+        for tab in set.tabs where tab.webView.superview == nil {
+            attach(tab.webView)
+            tab.webView.isHidden = true
+        }
+    }
+
+    private func attach(_ webView: WKWebView) {
+        container.addSubview(webView, positioned: .below, relativeTo: groupsList)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: container.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+    }
+
+    /// An app's tab bar shows once it has several tabs; a group's always shows, with its chip.
+    private func refreshTabBar(_ set: TabGroup) {
+        let chip = set.savedGroupID.flatMap { satelliteGroups.group($0) }.map { (name: $0.name, color: $0.color) }
+        let shows = chip != nil || set.tabs.count > 1
+        tabBar.isHidden = !shows
+        tabBarHeight?.constant = shows ? 34 : 0
+        if shows { tabBar.show(set, chip: chip) }
+    }
+
+    /// Makes the set's current tab the only visible web view, and shows its tab bar.
+    private func show(_ set: TabGroup) {
+        let current = set.current
+        for other in allTabs {
             for tab in other.tabs where tab.didCreateView && tab !== current { tab.webView.isHidden = true }
         }
-        if current.webView.superview == nil {
-            container.addSubview(current.webView)
-            NSLayoutConstraint.activate([
-                current.webView.topAnchor.constraint(equalTo: container.topAnchor),
-                current.webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                current.webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                current.webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
-        }
+        groupsList?.isHidden = true
+        if current.webView.superview == nil { attach(current.webView) }
         current.webView.isHidden = false
         current.loadIfNeeded()
-
-        let several = group.tabs.count > 1
-        tabBar.isHidden = !several
-        tabBarHeight?.constant = several ? 34 : 0
-        if several { tabBar.show(group) }
+        refreshTabBar(set)
         view.window?.makeFirstResponder(current.webView)
         // The front tab or app changed: let the toolbar (back/forward state, the address bar) catch up.
         NotificationCenter.default.post(name: .webPaneStateChanged, object: current)
@@ -300,7 +335,7 @@ final class AssistantsViewController: NSViewController {
     /// The web assistants, in panel order. Terminals aren't pages, so they aren't here.
     var openPages: [OpenPage] {
         items.compactMap { item in
-            panes[item.id].map { OpenPage(pane: $0, owner: item.name, ownerID: item.id, isAssistant: true, isCurrentTab: true, group: nil) }
+            panes[item.id].map { OpenPage(pane: $0, kind: .assistant, owner: item.name, ownerID: item.id, isCurrentTab: true) }
         }
     }
 

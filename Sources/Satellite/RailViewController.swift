@@ -145,6 +145,12 @@ final class RailViewController: NSViewController {
     private var buttons: [RailButton] = []
     private var selectedID: String?
     private let stack = NSStackView()
+    private let groupsButton = RailButton(title: "Groups", symbol: "square.grid.2x2", tooltip: "Tab Groups", badge: nil)
+
+    /// Highlights Groups, while the list of groups or one group is shown (then no app is selected).
+    func setGroupsSelected(_ selected: Bool) {
+        groupsButton.isSelected = selected
+    }
 
     override func loadView() {
         let root = NSView()
@@ -154,7 +160,7 @@ final class RailViewController: NSViewController {
         stack.alignment = .centerX
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let groups = RailButton(title: "Groups", symbol: "square.grid.2x2", tooltip: "Tab Groups", badge: nil)
+        let groups = groupsButton
         groups.target = self
         groups.action = #selector(groupsClicked)
 

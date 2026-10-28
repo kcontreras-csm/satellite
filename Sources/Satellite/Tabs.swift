@@ -1,14 +1,7 @@
 import AppKit
 import WebKit
 
-// MARK: - Tab groups (Chrome-style)
-
-/// A fixed, named palette so a group's color survives config-free, in-memory identity and is easy to menu-pick.
-enum TabClusterColor: String, CaseIterable {
-    case gray, blue, red, orange, yellow, green, pink, purple
-
-    var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
-
+extension GroupColor {
     var nsColor: NSColor {
         switch self {
         case .gray: return .systemGray
@@ -23,50 +16,76 @@ enum TabClusterColor: String, CaseIterable {
     }
 }
 
-/// A named, colored group of tabs within one app's tab bar — like Chrome's tab groups. Members stay contiguous in
-/// `TabGroup.tabs`: joining moves a tab next to the others, so the tab bar can draw one unbroken band per group.
-/// Session-only, like the tabs themselves: Satellite doesn't restore tabs across launches, so there's nothing to
-/// persist here either. `MCPBridge`'s `read_tab_group` tool looks a group up by `name` to snapshot every page in it.
-struct TabCluster: Identifiable, Equatable {
-    let id = UUID()
-    var name: String
-    var color: TabClusterColor
-    var collapsed = false
-}
-
-/// The tabs of one sidebar app. The first tab is the app itself and stays; the others are opened by links and
-/// `window.open` and can be closed. Any tab but the first can also join a `TabCluster`.
+/// The tabs shown together in the content area: one sidebar app's, or one Satellite tab group's (see
+/// `SatelliteGroups`). An app's first tab is the app itself and stays; its other tabs are opened by links and
+/// `window.open` and can be closed. A group's tabs are its pages, and any of them can be closed.
 @MainActor
 final class TabGroup {
     private(set) var tabs: [WebPane]
     private(set) var selectedIndex = 0
     /// Also open links to other sites as tabs, instead of sending them to the default browser.
     var opensAllLinksInTabs: Bool
-    /// Called whenever the tabs, the selected tab, or a cluster changes.
+    /// Called whenever the tabs or the selected tab change.
     var onChange: (() -> Void)?
+    /// The saved group these are the tabs of; nil for an app.
+    let savedGroupID: String?
+    /// A group's last tab closed. It has nothing left to show, so the caller unloads it.
+    var onEmpty: (() -> Void)?
 
-    private(set) var clusters: [TabCluster] = []
-    private var clusterOfTab: [ObjectIdentifier: UUID] = [:]
-
+    var isSatelliteGroup: Bool { savedGroupID != nil }
     var home: WebPane { tabs[0] }
     var current: WebPane { tabs[min(selectedIndex, tabs.count - 1)] }
-    var hasClosableTab: Bool { selectedIndex > 0 }
+    var hasClosableTab: Bool { canClose(selectedIndex) }
+
+    func canClose(_ index: Int) -> Bool { tabs.indices.contains(index) && (isSatelliteGroup || index > 0) }
 
     init(name: String, url: URL, opensAllLinksInTabs: Bool) {
         let home = WebPane(name: name, url: url)
         tabs = [home]
         self.opensAllLinksInTabs = opensAllLinksInTabs
+        savedGroupID = nil
         home.tabHost = self
     }
 
-    /// A new tab for a page that asked for a new window. WebKit loads the request into the returned pane's view.
-    func openTab(configuration: WKWebViewConfiguration) -> WebPane {
-        let pane = WebPane(name: "New tab", url: nil, configuration: configuration)
+    /// The tabs of a saved group, one per page, none loaded yet.
+    init(group: SavedGroup) {
+        tabs = []
+        opensAllLinksInTabs = false
+        savedGroupID = group.id
+        tabs = group.members.map(makeMemberTab)
+    }
+
+    /// A tab for a page added to this group while it's loaded, at the end. It doesn't take the selection.
+    @discardableResult
+    func openMember(_ member: GroupMember) -> WebPane {
+        let pane = makeMemberTab(member)
+        tabs.append(pane)
+        onChange?()
+        return pane
+    }
+
+    private func makeMemberTab(_ member: GroupMember) -> WebPane {
+        let pane = WebPane(name: member.name, url: member.url)
+        pane.groupMemberID = member.id
+        adopt(pane)
+        return pane
+    }
+
+    private func adopt(_ pane: WebPane) {
         pane.tabHost = self
         pane.onClose = { [weak self, weak pane] in
             guard let self, let pane else { return }
             self.close(pane)
         }
+    }
+
+    /// Starts loading every tab that hasn't loaded yet, in the background.
+    func loadAll() { tabs.forEach { $0.loadIfNeeded() } }
+
+    /// A new tab for a page that asked for a new window. WebKit loads the request into the returned pane's view.
+    func openTab(configuration: WKWebViewConfiguration) -> WebPane {
+        let pane = WebPane(name: "New tab", url: nil, configuration: configuration)
+        adopt(pane)
         tabs.append(pane)
         selectedIndex = tabs.count - 1
         onChange?()
@@ -76,17 +95,13 @@ final class TabGroup {
     func select(_ index: Int) {
         guard tabs.indices.contains(index), index != selectedIndex else { return }
         selectedIndex = index
-        // A tab reached directly (e.g. Next Tab) shouldn't stay hidden behind its own collapsed group.
-        if let id = clusterOfTab[ObjectIdentifier(tabs[index])], let i = clusters.firstIndex(where: { $0.id == id }) {
-            clusters[i].collapsed = false
-        }
         onChange?()
     }
 
     func selectNext() { if tabs.count > 1 { select((selectedIndex + 1) % tabs.count) } }
     func selectPrevious() { if tabs.count > 1 { select((selectedIndex - 1 + tabs.count) % tabs.count) } }
 
-    /// Closes the selected tab unless it is the app's own. Returns whether a tab was closed.
+    /// Closes the selected tab unless it is an app's own. Returns whether a tab was closed.
     @discardableResult
     func closeCurrent() -> Bool {
         guard hasClosableTab else { return false }
@@ -95,23 +110,32 @@ final class TabGroup {
     }
 
     func close(at index: Int) {
-        guard index > 0, tabs.indices.contains(index) else { return }
+        guard canClose(index) else { return }
         close(tabs[index])
     }
 
+    /// Closes a tab. In a group, the page stays in the saved group; it just isn't loaded until the group is again.
     func close(_ pane: WebPane) {
-        guard let index = tabs.firstIndex(where: { $0 === pane }), index > 0 else { return }
+        guard let index = tabs.firstIndex(where: { $0 === pane }), canClose(index) else { return }
         tabs.remove(at: index)
-        dropFromCluster(pane)
         pane.teardown()
+        if tabs.isEmpty {
+            onEmpty?()
+            return
+        }
         if selectedIndex >= index { selectedIndex = max(0, selectedIndex - 1) }
         onChange?()
     }
 
-    /// Shows the app's own tab and takes it back to the address it started at.
+    /// An app shows its own tab and takes it back to the address it started at; a group's tab goes back to the
+    /// address it was added with.
     func goHome() {
-        select(0)
-        home.goHome()
+        if isSatelliteGroup {
+            current.goHome()
+        } else {
+            select(0)
+            home.goHome()
+        }
     }
 
     func reloadAll() { tabs.forEach { $0.reloadIfLoaded() } }
@@ -119,132 +143,11 @@ final class TabGroup {
     func teardown() {
         tabs.forEach { $0.teardown() }
     }
-
-    // MARK: Clusters
-
-    func cluster(for pane: WebPane) -> TabCluster? {
-        guard let id = clusterOfTab[ObjectIdentifier(pane)] else { return nil }
-        return clusters.first { $0.id == id }
-    }
-
-    func cluster(at index: Int) -> TabCluster? {
-        tabs.indices.contains(index) ? cluster(for: tabs[index]) : nil
-    }
-
-    /// Case-insensitive, for the MCP tool's `group` argument.
-    func cluster(named name: String) -> TabCluster? {
-        clusters.first { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }
-    }
-
-    /// Members in tab order (they're always contiguous, but this doesn't rely on that).
-    func panes(in cluster: TabCluster) -> [WebPane] {
-        tabs.filter { clusterOfTab[ObjectIdentifier($0)] == cluster.id }
-    }
-
-    /// Puts the tab at `index` into a new cluster of its own. The home tab (index 0) can't be grouped.
-    @discardableResult
-    func newCluster(at index: Int, name: String, color: TabClusterColor) -> TabCluster? {
-        guard index > 0, tabs.indices.contains(index) else { return nil }
-        dropFromCluster(tabs[index])
-        let cluster = TabCluster(name: name, color: color)
-        clusters.append(cluster)
-        clusterOfTab[ObjectIdentifier(tabs[index])] = cluster.id
-        onChange?()
-        return cluster
-    }
-
-    /// Moves the tab at `index` next to `cluster`'s other members, then joins it.
-    func join(_ index: Int, to cluster: TabCluster) {
-        guard index > 0, tabs.indices.contains(index), clusters.contains(where: { $0.id == cluster.id }) else { return }
-        let pane = tabs[index]
-        let selectedPane = tabs[selectedIndex]
-        dropFromCluster(pane)
-        tabs.remove(at: tabs.firstIndex { $0 === pane }!)
-        let insertAt = (tabs.lastIndex { clusterOfTab[ObjectIdentifier($0)] == cluster.id }).map { $0 + 1 } ?? tabs.count
-        tabs.insert(pane, at: insertAt)
-        clusterOfTab[ObjectIdentifier(pane)] = cluster.id
-        selectedIndex = tabs.firstIndex { $0 === selectedPane } ?? 0
-        onChange?()
-    }
-
-    /// Removes the tab at `index` from its cluster, if any. The cluster itself goes away once it's empty.
-    func leaveCluster(at index: Int) {
-        guard tabs.indices.contains(index) else { return }
-        dropFromCluster(tabs[index])
-        onChange?()
-    }
-
-    func rename(_ cluster: TabCluster, to name: String) {
-        guard let i = clusters.firstIndex(where: { $0.id == cluster.id }), !name.isEmpty else { return }
-        clusters[i].name = name
-        onChange?()
-    }
-
-    func recolor(_ cluster: TabCluster, to color: TabClusterColor) {
-        guard let i = clusters.firstIndex(where: { $0.id == cluster.id }) else { return }
-        clusters[i].color = color
-        onChange?()
-    }
-
-    func toggleCollapsed(_ cluster: TabCluster) {
-        guard let i = clusters.firstIndex(where: { $0.id == cluster.id }) else { return }
-        clusters[i].collapsed.toggle()
-        onChange?()
-    }
-
-    /// Keeps every member tab open, just not grouped.
-    func ungroup(_ cluster: TabCluster) {
-        for pane in panes(in: cluster) { clusterOfTab.removeValue(forKey: ObjectIdentifier(pane)) }
-        clusters.removeAll { $0.id == cluster.id }
-        onChange?()
-    }
-
-    /// Closes every tab in `cluster`.
-    func closeCluster(_ cluster: TabCluster) {
-        for pane in panes(in: cluster) { close(pane) }
-    }
-
-    /// A default name that doesn't collide with an existing group ("Group 2", "From Chrome 2", ...).
-    func nextClusterName(base: String = "Group") -> String {
-        var n = clusters.count + 1
-        while clusters.contains(where: { $0.name == "\(base) \(n)" }) { n += 1 }
-        return "\(base) \(n)"
-    }
-
-    private func dropFromCluster(_ pane: WebPane) {
-        guard let id = clusterOfTab.removeValue(forKey: ObjectIdentifier(pane)) else { return }
-        if !tabs.contains(where: { clusterOfTab[ObjectIdentifier($0)] == id }) {
-            clusters.removeAll { $0.id == id }
-        }
-    }
-
-    /// What the tab bar draws, in order: a chip before each cluster's first member, then its tabs — skipped while
-    /// the cluster is collapsed, so only the chip (with a count) shows for it.
-    enum BarEntry {
-        case tab(index: Int)
-        case chip(TabCluster, count: Int)
-    }
-
-    var barEntries: [BarEntry] {
-        var out: [BarEntry] = []
-        var shown = Set<UUID>()
-        for (index, pane) in tabs.enumerated() {
-            guard let id = clusterOfTab[ObjectIdentifier(pane)], let cluster = clusters.first(where: { $0.id == id }) else {
-                out.append(.tab(index: index)); continue
-            }
-            if !shown.contains(id) {
-                shown.insert(id)
-                out.append(.chip(cluster, count: panes(in: cluster).count))
-            }
-            if !cluster.collapsed { out.append(.tab(index: index)) }
-        }
-        return out
-    }
 }
 
 // MARK: - Tab bar
 
-/// One tab: a title and (for closable tabs) a close button. A grouped tab shows a thin band of its cluster's color.
+/// One tab: a title and (for closable tabs) a close button. A group's tabs show a thin band of its color.
 final class TabButton: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
@@ -259,15 +162,15 @@ final class TabButton: NSView {
         didSet { refreshAppearance() }
     }
 
-    init(title: String, selected: Bool, closable: Bool, clusterColor: NSColor? = nil) {
+    init(title: String, selected: Bool, closable: Bool, groupColor: NSColor? = nil) {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 7
         translatesAutoresizingMaskIntoConstraints = false
         setContentHuggingPriority(.required, for: .horizontal)
 
-        if let clusterColor {
-            accent.backgroundColor = clusterColor.cgColor
+        if let groupColor {
+            accent.backgroundColor = groupColor.cgColor
             accent.cornerRadius = 1.5
             layer?.addSublayer(accent)
         }
@@ -343,60 +246,53 @@ final class TabButton: NSView {
     }
 }
 
-/// The small colored pill before a cluster's tabs: its name, and a count while collapsed. Click toggles collapse;
-/// right-click opens the group's menu (rename, recolor, collapse, ungroup, close).
-final class TabClusterChipView: NSView {
+/// The colored pill at the start of a group's tab bar: a back chevron and the group's name. Clicking it goes back
+/// to the list of groups.
+final class GroupChipView: NSView {
     var onClick: (() -> Void)?
-    var makeMenu: (() -> NSMenu?)?
     private let color: NSColor
-    private let dot = NSView()
-    private let label = NSTextField(labelWithString: "")
 
-    init(cluster: TabCluster) {
-        color = cluster.color.nsColor
+    init(name: String, color: NSColor) {
+        self.color = color
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 7
         translatesAutoresizingMaskIntoConstraints = false
         setContentHuggingPriority(.required, for: .horizontal)
+        toolTip = "Back to Tab Groups"
 
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.layer?.backgroundColor = color.cgColor
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(dot)
+        let chevron = NSImageView(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Back to Tab Groups")!
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 9, weight: .bold))!)
+        chevron.contentTintColor = color
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(chevron)
 
+        let label = NSTextField(labelWithString: name)
         label.font = .systemFont(ofSize: 11, weight: .semibold)
         label.textColor = .secondaryLabelColor
-        label.stringValue = cluster.name
+        label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 22),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
-            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 5),
+            widthAnchor.constraint(lessThanOrEqualToConstant: 200),
+            chevron.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 5),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Back to Tab Groups from \(name)")
         applyBackground()
-    }
-
-    /// `count` only shows while collapsed, matching Chrome (an expanded group's tabs are already visible, so
-    /// counting them again would be noise).
-    convenience init(cluster: TabCluster, count: Int) {
-        self.init(cluster: cluster)
-        if cluster.collapsed { label.stringValue = "\(cluster.name) (\(count))" }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     override func mouseDown(with event: NSEvent) { onClick?() }
-    override func menu(for event: NSEvent) -> NSMenu? { makeMenu?() ?? super.menu(for: event) }
+    override func accessibilityPerformPress() -> Bool { onClick?(); return true }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -408,27 +304,24 @@ final class TabClusterChipView: NSView {
     }
 }
 
-/// A strip of tabs above the web content; only visible when an app has more than one. Grouped tabs show a colored
-/// chip (`TabClusterChipView`) before them.
+/// A strip of tabs above the web content. An app's shows once it has more than one tab; a group's always shows,
+/// starting with its chip (`GroupChipView`).
 final class TabBarView: NSView {
     var onSelect: ((Int) -> Void)?
     var onClose: ((Int) -> Void)?
     /// The right-click menu of the tab at an index.
     var menuForTab: ((Int) -> NSMenu?)?
-    /// The right-click menu of a cluster's chip.
-    var menuForChip: ((TabCluster) -> NSMenu?)?
-    var onChipClick: ((TabCluster) -> Void)?
+    /// The group's chip was clicked.
+    var onChipClick: (() -> Void)?
 
     private let stack = NSStackView()
-    private var buttons: [TabButton] = []
-    private var chips: [TabClusterChipView] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         stack.orientation = .horizontal
         stack.spacing = 4
         stack.alignment = .centerY
-        stack.distribution = .fill   // mixed-width chips and tabs; .fillEqually would stretch chips to tab width
+        stack.distribution = .fill   // the chip is narrower than the tabs; .fillEqually would stretch it
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -450,28 +343,22 @@ final class TabBarView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    /// Rebuilds the bar from `group`'s current tabs and clusters. Cheap enough to call on every title change too.
-    func show(_ group: TabGroup) {
-        (buttons as [NSView] + chips).forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
-        buttons = []
-        chips = []
-        for entry in group.barEntries {
-            switch entry {
-            case .chip(let cluster, let count):
-                let chip = TabClusterChipView(cluster: cluster, count: count)
-                chip.onClick = { [weak self] in self?.onChipClick?(cluster) }
-                chip.makeMenu = { [weak self] in self?.menuForChip?(cluster) }
-                chips.append(chip)
-                stack.addArrangedSubview(chip)
-            case .tab(let index):
-                let button = TabButton(title: group.tabs[index].tabTitle, selected: index == group.selectedIndex,
-                                        closable: index > 0, clusterColor: group.cluster(at: index)?.color.nsColor)
-                button.onSelect = { [weak self] in self?.onSelect?(index) }
-                button.onClose = { [weak self] in self?.onClose?(index) }
-                button.makeMenu = { [weak self] in self?.menuForTab?(index) }
-                buttons.append(button)
-                stack.addArrangedSubview(button)
-            }
+    /// Rebuilds the bar from `group`'s current tabs, with a chip first for a Satellite group. Cheap enough to call
+    /// on every title change too.
+    func show(_ group: TabGroup, chip: (name: String, color: GroupColor)? = nil) {
+        stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        if let chip {
+            let view = GroupChipView(name: chip.name, color: chip.color.nsColor)
+            view.onClick = { [weak self] in self?.onChipClick?() }
+            stack.addArrangedSubview(view)
+        }
+        for (index, pane) in group.tabs.enumerated() {
+            let button = TabButton(title: pane.tabTitle, selected: index == group.selectedIndex,
+                                   closable: group.canClose(index), groupColor: chip?.color.nsColor)
+            button.onSelect = { [weak self] in self?.onSelect?(index) }
+            button.onClose = { [weak self] in self?.onClose?(index) }
+            button.makeMenu = { [weak self] in self?.menuForTab?(index) }
+            stack.addArrangedSubview(button)
         }
     }
 }

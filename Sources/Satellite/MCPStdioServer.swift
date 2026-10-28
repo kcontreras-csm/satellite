@@ -9,7 +9,7 @@ enum MCPStdioServer {
     private static let tools: [[String: Any]] = [
         [
             "name": "list_open_pages",
-            "description": "Lists every page open in Satellite (not this terminal): each tab of each app, grouped by app, then the web assistants \u{2014} each with an id, its title and address, which one is shown now, and its tab group if any. Pass an id to read_page to read that page, whether or not it\u{2019}s shown.",
+            "description": "Lists every page open in Satellite (not this terminal): each tab of each app, then each tab group (with whether it\u{2019}s loaded, and its tabs if so), then the web assistants \u{2014} each page with an id, its title and address, and which one is shown now. Pass an id to read_page to read that page, whether or not it\u{2019}s shown.",
             "inputSchema": ["type": "object", "properties": [String: Any]()],
         ],
         [
@@ -40,10 +40,9 @@ enum MCPStdioServer {
         ],
         [
             "name": "read_tab_group",
-            "description": "Reads every open tab in a named tab group (Satellite\u{2019}s Chrome-style groups: a colored chip plus the tabs grouped under it) \u{2014} each as the same Markdown read_page returns, concatenated, so an agent can search across several related pages at once. `group` is the group\u{2019}s name, as on its chip in the tab bar and in list_open_pages. Looks in every app; pass `app` only if two apps have a group with that name.",
+            "description": "Reads every page of a Satellite tab group (pages from any apps or addresses, kept together under a name) \u{2014} each as the same Markdown read_page returns, concatenated, so an agent can search across several related pages at once. The group must be loaded; list_open_pages says which are. If it isn\u{2019}t, ask the user to press Load next to it in Satellite\u{2019}s Groups view, which opens its pages in the background without switching to them.",
             "inputSchema": ["type": "object", "required": ["group"],
-                             "properties": ["group": ["type": "string", "description": "A tab group\u{2019}s name, as shown on its chip in Satellite\u{2019}s tab bar."],
-                                            "app": ["type": "string", "description": "An app\u{2019}s name or id, from list_open_pages, when more than one app has a group with that name."]]],
+                             "properties": ["group": ["type": "string", "description": "The group\u{2019}s name, as in list_open_pages and Satellite\u{2019}s Groups view."]]],
         ],
     ]
 
