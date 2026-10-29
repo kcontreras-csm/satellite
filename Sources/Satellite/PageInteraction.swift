@@ -7,11 +7,38 @@ struct PageInteractionError: LocalizedError {
 
 /// Clicking and typing for Satellite's local MCP server (`MCPBridge`): the write counterpart to `PageSnapshot`.
 /// Selectors use the same `>>` shadow-root convention `PageSnapshot` documents and lists in a snapshot's
-/// "Interactive elements", so an agent can read a page, then act on exactly what it found there. Acts on the main
-/// frame only; it doesn't reach into iframes. There is no confirmation at this layer — `MCPBridge` asks once per
-/// agent before any of this runs, because clicking and typing can submit forms and change data.
+/// "Interactive elements", so an agent can read a page, then act on exactly what it found there. One that starts
+/// with `frame:<path> >> ` acts in that iframe (`FrameRegistry` knows each frame, other sites' included). There is
+/// no confirmation at this layer — `MCPBridge` asks once per agent before any of this runs, because clicking and
+/// typing can submit forms and change data.
 @MainActor
 enum PageInteraction {
+    /// How a snapshot names a frame at the start of its selectors: `frame:0 >> `, `frame:0.1 >> ` for a frame
+    /// inside it.
+    nonisolated static func framePrefix(_ path: [Int]) -> String {
+        "frame:" + path.map(String.init).joined(separator: ".") + " >> "
+    }
+
+    /// Where a selector acts: the frame it names (nil for the page itself), and the selector within it.
+    struct Target {
+        let frame: FrameRegistry.Record?
+        let selector: String
+    }
+
+    struct FrameGone: LocalizedError {
+        let path: String
+        var errorDescription: String? { "Frame \(path) isn\u{2019}t on the page any more (it may have reloaded). Read the page again for current selectors." }
+    }
+
+    static func target(_ selector: String, in webView: WKWebView) throws -> Target {
+        let trimmed = selector.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("frame:"), let split = trimmed.range(of: ">>") else { return Target(frame: nil, selector: trimmed) }
+        let pathText = trimmed[trimmed.index(trimmed.startIndex, offsetBy: 6)..<split.lowerBound].trimmingCharacters(in: .whitespaces)
+        let path = pathText.split(separator: ".").compactMap { Int($0) }
+        guard !path.isEmpty, path.count == pathText.split(separator: ".").count,
+              let record = FrameRegistry.shared.frames(of: webView).first(where: { $0.path == path }) else { throw FrameGone(path: pathText) }
+        return Target(frame: record, selector: String(trimmed[split.upperBound...]).trimmingCharacters(in: .whitespaces))
+    }
     struct Clicked {
         /// What was clicked when `selector` named something that isn't itself a control (a table cell, say) and
         /// held one: that control, like "the link “475961231”"; nil when the element itself was clicked.
@@ -21,7 +48,8 @@ enum PageInteraction {
     /// Clicks the element `selector` resolves to, or, if that isn't a control, the first control inside it (as
     /// clicking a cell clicks its link). Nil if nothing matched.
     static func click(_ webView: WKWebView, selector: String) async throws -> Clicked? {
-        let result = try await run(clickScript, in: webView, arguments: ["selector": selector])
+        let target = try target(selector, in: webView)
+        let result = try await run(clickScript, in: webView, frame: target.frame, arguments: ["selector": target.selector])
         guard result["found"] as? Bool == true else { return nil }
         return Clicked(inside: result["inside"] as? String)
     }
@@ -29,14 +57,15 @@ enum PageInteraction {
     /// Replaces the content of the field (or contenteditable element) `selector` resolves to with `text`, then,
     /// with `pressEnter`, dispatches an Enter key and submits its form if it has one. Returns whether it was found.
     static func type(_ webView: WKWebView, selector: String, text: String, pressEnter: Bool) async throws -> Bool {
-        let result = try await run(typeScript, in: webView, arguments: ["selector": selector, "text": text, "pressEnter": pressEnter])
+        let target = try target(selector, in: webView)
+        let result = try await run(typeScript, in: webView, frame: target.frame, arguments: ["selector": target.selector, "text": text, "pressEnter": pressEnter])
         return result["found"] as? Bool ?? false
     }
 
-    private static func run(_ script: String, in webView: WKWebView, arguments: [String: Any]) async throws -> [String: Any] {
+    private static func run(_ script: String, in webView: WKWebView, frame: FrameRegistry.Record?, arguments: [String: Any]) async throws -> [String: Any] {
         guard webView.url != nil else { throw PageInteractionError("There is no page to act on yet.") }
         let value: Any? = try await withThrowingTaskGroup(of: Any?.self) { group in
-            group.addTask { @MainActor in try await webView.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page) }
+            group.addTask { @MainActor in try await webView.callAsyncJavaScript(script, arguments: arguments, in: frame?.info, contentWorld: .page) }
             group.addTask {
                 try await Task.sleep(nanoseconds: 15_000_000_000)
                 throw PageInteractionError("The page took too long to answer.")

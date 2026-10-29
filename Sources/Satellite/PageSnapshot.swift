@@ -160,7 +160,9 @@ enum PageSnapshot {
     private static func collect(in webView: WKWebView, frame: WKFrameInfo?, options: Options, budget: Int) async throws -> Captured {
         let arguments: [String: Any] = ["options": [
             "text": options.text.rawValue, "budget": budget, "interactiveLimit": options.interactiveLimit,
-            "agent": options.forAgent, "interactiveChars": options.interactiveChars,
+            // A frame's controls and text share its (smaller) budget, so many frames can't crowd the answer.
+            "agent": options.forAgent,
+            "interactiveChars": frame == nil ? options.interactiveChars : min(options.interactiveChars, budget),
             "visibleText": frame == nil ? options.visibleText : min(options.visibleText, budget),
         ] as [String: Any]]
         let value: Any? = try await withThrowingTaskGroup(of: Any?.self) { group in
@@ -272,12 +274,15 @@ enum PageSnapshot {
             if !page.interactive.isEmpty {
                 out += "### Interactive elements\n\n"
                 if options.forAgent {
-                    out += "Visible ones first, in the order they're shown. Pass a selector as it is to click_element or type_text (`>>` is where it enters a shadow root).\n\n"
+                    out += "Visible ones first, in the order they're shown. Pass a selector as it is to click_element or type_text (`>>` is where it enters a shadow root"
+                    out += page.path.isEmpty ? ").\n\n" : "; the `frame:` at its start says which frame it's in).\n\n"
                 } else {
                     out += "Selectors use `>>` where the path enters a shadow root (`document.querySelector` cannot cross it; query the host's `shadowRoot` next).\n\n"
                 }
+                // An agent acts in a frame by naming it first (`PageInteraction` reads this prefix).
+                let framePrefix = options.forAgent && !page.path.isEmpty ? PageInteraction.framePrefix(page.path) : ""
                 for item in page.interactive {
-                    var line = "- `\(item["selector"] as? String ?? "?")`"
+                    var line = "- `\(framePrefix)\(item["selector"] as? String ?? "?")`"
                     if let role = item["role"] as? String, !role.isEmpty { line += " \(role)" }
                     if let text = item["text"] as? String, !text.isEmpty { line += " \u{201C}\(text)\u{201D}" }
                     if let href = item["href"] as? String, !href.isEmpty { line += " \u{2192} \(href)" }

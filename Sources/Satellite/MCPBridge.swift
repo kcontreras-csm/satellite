@@ -135,22 +135,32 @@ final class MCPBridge {
                     return ["ok": false, "error": "A selector is required."]
                 }
                 let before = (url: pane.webView.url, title: pane.webView.title)
+                // A click in a frame can navigate just that frame: watch its address too.
+                let framePath = try PageInteraction.target(selector, in: pane.webView).frame?.path
+                let frameURL = { framePath.flatMap { path in FrameRegistry.shared.frames(of: pane.webView).first { $0.path == path }?.url } }
+                let frameBefore = frameURL()
                 guard let clicked = try await PageInteraction.click(pane.webView, selector: selector) else {
                     return ["ok": false, "error": "No element matched \(selector). Read the page again for current selectors."]
                 }
                 var text = "Clicked " + (clicked.inside ?? selector) + "."
                 // Whether it led somewhere (a single-page app like Lightning changes its address without loading).
                 let end = Date().addingTimeInterval(2)
-                while Date() < end, pane.webView.url == before.url, pane.webView.title == before.title {
+                while Date() < end, pane.webView.url == before.url, pane.webView.title == before.title, frameURL() == frameBefore {
                     try await Task.sleep(nanoseconds: 100_000_000)
                 }
-                if pane.webView.url != before.url || pane.webView.title != before.title {
+                if let framePath, pane.webView.url == before.url, let now = frameURL(), now != frameBefore {
+                    text += " Frame \(framePath.map(String.init).joined(separator: ".")) is now at \(now); read the page again for what it shows."
+                } else if framePath != nil, frameURL() == nil {
+                    text += " Frame \(framePath!.map(String.init).joined(separator: ".")) went away or is loading something new; read the page again for what it shows."
+                } else if pane.webView.url != before.url || pane.webView.title != before.title {
                     // The address changes first; let the new page load (and name itself) before saying what it is.
                     let settle = Date().addingTimeInterval(3)
                     while Date() < settle, pane.webView.isLoading { try await Task.sleep(nanoseconds: 100_000_000) }
                     text += " The page is now \u{201C}\(pane.webView.title ?? "")\u{201D} \(pane.webView.url?.absoluteString ?? "")."
                 } else {
-                    text += " The page\u{2019}s address and title didn\u{2019}t change (fine for a button that acts in place; if it should have opened something, it may not have)."
+                    let what = framePath.map { "Frame \($0.map(String.init).joined(separator: ".")) and the page stayed where they were" }
+                        ?? "The page\u{2019}s address and title didn\u{2019}t change"
+                    text += " \(what) (fine for a button that acts in place; if it should have opened something, it may not have)."
                 }
                 return ["ok": true, "text": text]
             case "type":
@@ -185,7 +195,7 @@ final class MCPBridge {
         options.interactiveChars = max(4_000, 25_000 / count)
         options.visibleText = max(5_000, 30_000 / count)
         options.mainBudget = max(5_000, 25_000 / count)
-        options.frameBudget = max(2_000, 6_000 / count)
+        options.frameBudget = max(2_000, 8_000 / count)   // each frame's HTML, and its controls and text
         return try await PageSnapshot.capture(pane.webView, options: options)
     }
 

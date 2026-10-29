@@ -51,13 +51,13 @@ enum MCPStdioServer {
         ],
         [
             "name": "click_element",
-            "description": "Clicks an element on the page open in Satellite\u{2019}s apps panel. `selector` is one from read_active_page’s “Interactive elements” (plain CSS, with `>>` where it crosses into a shadow root). Main frame only. Satellite asks the user once per agent before any agent can click or type on the page — a separate, stronger confirmation than reading.",
+            "description": "Clicks an element on the page open in Satellite\u{2019}s apps panel. `selector` is one from read_active_page’s “Interactive elements” (plain CSS, with `>>` where it crosses into a shadow root; one starting `frame:` acts inside that iframe, including other sites’). Clicking something that isn’t a control, like a table cell, clicks the link or button inside it; the answer says whether the page (or frame) went somewhere. Satellite asks the user once per agent before any agent can click or type on the page — a separate, stronger confirmation than reading.",
             "inputSchema": ["type": "object", "required": ["selector"],
                              "properties": ["selector": ["type": "string", "description": "A selector from read_active_page’s Interactive elements."]]],
         ],
         [
             "name": "type_text",
-            "description": "Replaces the content of a field (or contenteditable element) on the page open in Satellite’s apps panel with `text`, optionally pressing Enter afterward (which also submits its form, if it has one). `selector` is one from read_active_page’s “Interactive elements”. Main frame only.",
+            "description": "Replaces the content of a field (or contenteditable element) on the page open in Satellite’s apps panel with `text`, optionally pressing Enter afterward (which also submits its form, if it has one). `selector` is one from read_active_page’s “Interactive elements”, including a frame’s (starting `frame:`).",
             "inputSchema": ["type": "object", "required": ["selector", "text"],
                              "properties": ["selector": ["type": "string", "description": "A selector from read_active_page’s Interactive elements."],
                                             "text": ["type": "string", "description": "Replaces the field’s current content."],
