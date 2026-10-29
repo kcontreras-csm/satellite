@@ -75,7 +75,16 @@ enum PageInteraction {
     el.scrollIntoView({ block: 'center', inline: 'center' });
     el.focus();
     const isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
-    if (isField) el.select();
+    if (isField) {
+      el.select();
+    } else if (el.isContentEditable) {
+      // Select what's there, so the text typed below replaces it (as in a field) instead of going in at the caret.
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
     let inserted = false;
     if (document.execCommand && document.execCommand('insertText', false, text)) {
       inserted = true;

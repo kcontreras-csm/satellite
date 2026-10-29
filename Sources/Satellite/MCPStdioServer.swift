@@ -85,6 +85,8 @@ enum MCPStdioServer {
                              "serverInfo": ["name": "satellite", "version": AppInfo.version.description]])
             case "notifications/initialized":
                 break   // a notification: no reply expected or sent
+            case "ping":
+                respond(id, [:])   // the spec: answer promptly, with an empty result
             case "tools/list":
                 respond(id, ["tools": tools])
             case "tools/call":
@@ -145,8 +147,9 @@ enum MCPStdioServer {
         }
         guard connected == 0 else { return .failure(BridgeFailure(message: "Satellite isn\u{2019}t running. Open it, then try again.")) }
 
+        MCPSocket.ignoreBrokenPipe(fd)
         MCPSocket.sendLine(request, to: fd)
-        guard let response = MCPSocket.receiveLine(from: fd) else {
+        guard let response = MCPSocket.receiveLine(from: fd, limit: MCPSocket.responseLimit) else {
             return .failure(BridgeFailure(message: "Satellite closed the connection without answering."))
         }
         if response["ok"] as? Bool == true, let text = response["text"] as? String { return .success(text) }

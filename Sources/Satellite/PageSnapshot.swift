@@ -6,6 +6,8 @@ import WebKit
 enum SnapshotDefaults {
     static let textMode = "snapshotTextMode"
     static let includeGuide = "snapshotIncludeGuide"
+    /// What agents reading through the local MCP server get, separately from Copy Page for AI and Send to Assistant.
+    static let agentTextMode = "agentSnapshotTextMode"
 }
 
 /// How much of the page's visible text goes into a snapshot.
@@ -19,6 +21,12 @@ enum SnapshotTextMode: String, CaseIterable {
 
     static var current: SnapshotTextMode {
         SnapshotTextMode(rawValue: UserDefaults.standard.string(forKey: SnapshotDefaults.textMode) ?? "") ?? .labels
+    }
+
+    /// For agents, all text unless the user chose otherwise: an agent is asked for by name and allowed explicitly,
+    /// and searching what pages say is what it's for. (Copy Page for AI and Send to Assistant keep `current`.)
+    static var forAgents: SnapshotTextMode {
+        SnapshotTextMode(rawValue: UserDefaults.standard.string(forKey: SnapshotDefaults.agentTextMode) ?? "") ?? .full
     }
 
     var summary: String {
@@ -114,17 +122,26 @@ enum PageSnapshot {
         /// For an assistant to help with the page, rather than to write an extension: no extension guide, no task
         /// to fill in, and none of the scripts, stylesheets and globals only an extension author needs.
         var forAssistant = false
+        /// Roughly how many characters of HTML the main page and each frame may take. A page with more is shown in
+        /// less detail (shortened attributes and text, then only useful attributes, then an outline) until it
+        /// fits, and cut as a last resort.
+        var mainBudget = 400_000
+        var frameBudget = 120_000
+        /// At most this many clickable elements are listed (each with a selector), per page or frame.
+        var interactiveLimit = 300
+        /// The Settings > General option that decides `text`, named when text is left out.
+        var textSetting = "Page text in snapshots"
     }
 
     /// Captures the page shown in `webView`, including its frames, as a Markdown document.
     static func capture(_ webView: WKWebView, options: Options = Options()) async throws -> String {
         guard webView.url != nil else { throw PageSnapshotError("There is no page to capture yet.") }
 
-        let main = try await collect(in: webView, frame: nil, options: options, budget: 400_000)
+        let main = try await collect(in: webView, frame: nil, options: options, budget: options.mainBudget)
         var children: [Captured] = []
         for record in FrameRegistry.shared.frames(of: webView) where !record.path.isEmpty {
             do {
-                children.append(try await collect(in: webView, frame: record.info, options: options, budget: 120_000))
+                children.append(try await collect(in: webView, frame: record.info, options: options, budget: options.frameBudget))
             } catch {
                 FrameRegistry.shared.forget(webView, path: record.path)   // the frame went away
             }
@@ -133,7 +150,7 @@ enum PageSnapshot {
     }
 
     private static func collect(in webView: WKWebView, frame: WKFrameInfo?, options: Options, budget: Int) async throws -> Captured {
-        let arguments: [String: Any] = ["options": ["text": options.text.rawValue, "budget": budget]]
+        let arguments: [String: Any] = ["options": ["text": options.text.rawValue, "budget": budget, "interactiveLimit": options.interactiveLimit]]
         let value: Any? = try await withThrowingTaskGroup(of: Any?.self) { group in
             group.addTask { @MainActor in
                 try await webView.callAsyncJavaScript(collectorScript, arguments: arguments, in: frame, contentWorld: .page)
@@ -202,7 +219,10 @@ enum PageSnapshot {
         out += "- **Title:** \(main.title)\n"
         out += "- **Captured:** \(ISO8601DateFormatter().string(from: Date())) with Satellite \(AppInfo.version)\n"
         if !main.viewport.isEmpty { out += "- **Window:** \(main.viewport)\(main.language.isEmpty ? "" : ", language \(main.language)")\n" }
-        out += "- **Text:** \(options.text.summary)\n"
+        out += "- **Text:** \(options.text.summary)"
+        // Whoever reads this (an assistant, an agent) can then tell the user why page text is missing, and where.
+        if options.forAssistant, options.text != .full { out += " (the user can include all of it in Satellite\u{2019}s Settings > General > \(options.textSetting))" }
+        out += "\n"
         if !main.hints.isEmpty { out += "- **Looks like:** \(main.hints.joined(separator: "; "))\n" }
         out += "- **Frames:** \(frames.isEmpty ? "none besides the main page" : frames.map { "\($0.pathLabel) (\($0.url))" }.joined(separator: ", "))\n"
         out += "\n"
@@ -292,6 +312,7 @@ enum PageSnapshot {
     private static let collectorScript = #"""
     const mode = (options && options.text) || 'labels';
     const budget = (options && options.budget) || 400000;
+    const interactiveLimit = (options && options.interactiveLimit) || 300;
 
     const VOID = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
     const LABEL_TAGS = new Set(['button','a','label','th','h1','h2','h3','h4','h5','h6','option','legend','summary','caption','title','figcaption','dt','nav','optgroup']);
@@ -472,34 +493,40 @@ enum PageSnapshot {
 
     // Clickable things, with selectors an extension can use.
     const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\w-]/g, '\\$&'));
+    // Within each root (the document, or a shadow root) it walks up a few levels, or to an id, which is unique
+    // in that root; inside a shadow root it then carries on from the host after `>>`. So every selector starts at
+    // the document, which is where something resolving it (an extension, PageInteraction) starts too.
     const selectorFor = (el) => {
       const segments = [];
       let node = el;
-      for (let depth = 0; node && node.nodeType === 1 && depth < 7; depth++) {
-        if (node.id && !/\d{3,}|[0-9a-f]{8}-/i.test(node.id)) { segments.unshift('#' + cssEscape(node.id)); break; }
-        let part = node.localName;
-        const classes = Array.from(node.classList || []).filter((c) => !/\d{3,}/.test(c)).slice(0, 2);
-        if (classes.length) part += '.' + classes.map(cssEscape).join('.');
-        const parent = node.parentElement;
-        if (parent) {
-          const same = Array.from(parent.children).filter((c) => c.localName === node.localName);
-          if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      while (node && node.nodeType === 1) {
+        for (let depth = 0; node && node.nodeType === 1 && depth < 7; depth++) {
+          if (node.id && !/\d{3,}|[0-9a-f]{8}-/i.test(node.id)) { segments.unshift('#' + cssEscape(node.id)); break; }
+          let part = node.localName;
+          const classes = Array.from(node.classList || []).filter((c) => !/\d{3,}/.test(c)).slice(0, 2);
+          if (classes.length) part += '.' + classes.map(cssEscape).join('.');
+          const parent = node.parentElement;
+          if (parent) {
+            const same = Array.from(parent.children).filter((c) => c.localName === node.localName);
+            if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+          }
+          segments.unshift(part);
+          if (!parent) break;
+          node = parent;
         }
-        segments.unshift(part);
-        if (parent) { node = parent; continue; }
-        const host = node.getRootNode && node.getRootNode().host;
+        const host = node && node.getRootNode && node.getRootNode().host;
         if (!host) break;
         segments.unshift('>>');
         node = host;
       }
-      return segments.join(' ').replace(/ >> /g, ' >> ');
+      return segments.join(' ');
     };
     const INTERACTIVE = 'a[href],button,input,select,textarea,summary,[role=button],[role=tab],[role=menuitem],[role=link],[role=checkbox],[role=switch],[role=combobox],[role=option],[contenteditable=true],[tabindex]:not([tabindex="-1"]),lightning-button,lightning-button-icon,lightning-input,lightning-combobox,lightning-menu-item';
     const interactive = [];
     const seenControls = new Set();
     for (const root of roots) {
       for (const el of root.querySelectorAll(INTERACTIVE)) {
-        if (interactive.length >= 300 || seenControls.has(el)) continue;
+        if (interactive.length >= interactiveLimit || seenControls.has(el)) continue;
         seenControls.add(el);
         const labelText = mode === 'none' ? '' : (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('label') || el.textContent || '');
         interactive.push({

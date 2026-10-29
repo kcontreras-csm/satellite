@@ -679,6 +679,7 @@ private struct GeneralSettings: View {
     @ObservedObject var securityKeys = FIDODeviceMonitor.shared
     @AppStorage(SnapshotDefaults.textMode) private var snapshotText = SnapshotTextMode.labels.rawValue
     @AppStorage(SnapshotDefaults.includeGuide) private var snapshotGuide = true
+    @AppStorage(SnapshotDefaults.agentTextMode) private var agentText = SnapshotTextMode.full.rawValue
     @AppStorage(CodeEditor.defaultsKey) private var editorChoice = ""
     @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
 
@@ -742,6 +743,14 @@ private struct GeneralSettings: View {
             }
             Toggle("Include the extension-writing guide", isOn: $snapshotGuide)
             Text("View > Copy Page for AI puts the current page (its HTML including shadow DOM and frames, clickable elements and selectors) on the clipboard. Pages often hold customer data, so by default only interface labels are kept and tokens in links are hidden. Check the result before sharing it.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            Picker("Page text for agents", selection: $agentText) {
+                Text("All text").tag(SnapshotTextMode.full.rawValue)
+                Text("Interface labels only").tag(SnapshotTextMode.labels.rawValue)
+                Text("No text, structure only").tag(SnapshotTextMode.none.rawValue)
+            }
+            Text("What an agent you\u{2019}ve allowed to read pages gets through Satellite\u{2019}s MCP server (Satellite > Install MCP Server), such as Claude Code in a terminal. All text by default, so it can search what pages say; tokens in links are still hidden. Copy Page for AI and Send to Assistant use the setting above.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()

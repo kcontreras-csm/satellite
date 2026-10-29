@@ -18,6 +18,8 @@ final class MCPBridge {
     static let shared = MCPBridge()
     weak var mainController: MainWindowController?
     var trust: AssistantTrust = .shared
+    /// Asks the user whether an agent may read or write; an alert in the app, replaceable for checks.
+    var confirm: (_ kind: Kind, _ agent: String, _ window: NSWindow?) async -> AssistantSender.Answer = MCPBridge.askWithAlert
 
     private var listenFD: Int32 = -1
     private let queue = DispatchQueue(label: "satellite.mcp.accept")
@@ -49,7 +51,8 @@ final class MCPBridge {
         while true {
             let client = accept(fd, nil, nil)
             guard client >= 0 else { return }   // the listening socket was closed in stop()
-            guard let request = MCPSocket.receiveLine(from: client) else { close(client); continue }
+            MCPSocket.ignoreBrokenPipe(client)
+            guard let request = MCPSocket.receiveLine(from: client, limit: MCPSocket.requestLimit) else { close(client); continue }
             Task { @MainActor [self] in
                 let response = await self.handle(request)
                 MCPSocket.sendLine(response, to: client)
@@ -68,8 +71,8 @@ final class MCPBridge {
         let kind: Kind = ["click", "type"].contains(action) ? .write : .read
         let trustID = "\(kind.trustPrefix):\(paneID)"
         if !trust.isTrusted(trustID) {
-            let answer = await Self.confirm(kind, label: label, window: controller.window)
-            guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to \(kind.declinedVerb) this page."] }
+            let answer = await confirm(kind, label, controller.window)
+            guard answer.send else { return ["ok": false, "error": "The user didn\u{2019}t allow \(label) to \(kind.declinedVerb)."] }
             if answer.remember { trust.set(trustID, trusted: true) }
         }
         do {
@@ -91,7 +94,8 @@ final class MCPBridge {
                 guard let page, page.isLoaded else {
                     return ["ok": false, "error": "That page hasn\u{2019}t loaded yet, so there\u{2019}s nothing to read. Open it in Satellite, or wait for it to load."]
                 }
-                return ["ok": true, "text": try await PageSnapshot.capture(page.pane.webView, options: .init(forAssistant: true))]
+                let text = try await Self.snapshot(page.pane)
+                return ["ok": true, "text": Self.fitted(text, note: "The rest of this page didn\u{2019}t fit.")]
             case "readGroup":
                 guard let name = request["group"] as? String, !name.isEmpty else {
                     return ["ok": false, "error": "A group name is required."]
@@ -105,11 +109,13 @@ final class MCPBridge {
                 }
                 let members = tabs.tabs.filter { $0.didCreateView && $0.webView.url != nil }
                 guard !members.isEmpty else { return ["ok": false, "error": "\u{201C}\(saved.name)\u{201D} has no loaded pages yet. Try again once they\u{2019}ve loaded."] }
+                // The pages share one answer's room, so a large first page can't push the others out of sight.
                 var sections: [String] = []
                 for member in members {
-                    sections.append(try await PageSnapshot.capture(member.webView, options: .init(forAssistant: true)))
+                    sections.append(try await Self.snapshot(member, sharedBy: members.count))
                 }
-                return ["ok": true, "text": sections.joined(separator: "\n---\n\n")]
+                let joined = sections.joined(separator: "\n---\n\n")
+                return ["ok": true, "text": Self.fitted(joined, note: "Read the group\u{2019}s pages one at a time with read_page (ids in list_open_pages) to see each in full.")]
             default:
                 break
             }
@@ -120,7 +126,7 @@ final class MCPBridge {
         // Clicking and typing only ever act on the page in front: reading a tab you aren't looking at is one
         // thing, changing one is another.
         guard let pane = controller.currentWebsitePane, pane.didCreateView, pane.webView.url != nil else {
-            return ["ok": false, "error": "There is no page open in Satellite to \(kind.declinedVerb)."]
+            return ["ok": false, "error": "No page is shown in Satellite now (it may be showing its list of tab groups), so there\u{2019}s nothing to click or type on."]
         }
         do {
             switch action {
@@ -143,6 +149,27 @@ final class MCPBridge {
         } catch {
             return ["ok": false, "error": error.localizedDescription]
         }
+    }
+
+    /// Claude Code keeps at most 25,000 tokens of a tool's answer by default (about 100,000 characters) and cuts the
+    /// rest unseen. Answers stay under that, so what an agent gets is all there is, or says where it was cut.
+    static let outputLimit = 90_000
+
+    /// A page as `read_page` gives it, sized so `sharedBy` of them fit in one answer: big pages come in less
+    /// detail rather than being cut off partway.
+    private static func snapshot(_ pane: WebPane, sharedBy count: Int = 1) async throws -> String {
+        var options = PageSnapshot.Options(forAssistant: true)
+        options.text = SnapshotTextMode.forAgents
+        options.textSetting = "Page text for agents"
+        options.mainBudget = max(8_000, 60_000 / count)
+        options.frameBudget = max(2_000, 12_000 / count)
+        options.interactiveLimit = max(25, 300 / count)   // each listed with its selector, ~70 characters
+        return try await PageSnapshot.capture(pane.webView, options: options)
+    }
+
+    private static func fitted(_ text: String, note: String) -> String {
+        guard text.count > outputLimit else { return text }
+        return String(text.prefix(outputLimit)) + "\n\n[Cut here to fit an agent\u{2019}s tool output limit. \(note)]"
     }
 
     /// What `list_open_pages` returns: every page with its id — by app, then by tab group (unloaded groups too, so
@@ -199,28 +226,33 @@ final class MCPBridge {
         return lines.joined(separator: "\n")
     }
 
-    private enum Kind {
+    enum Kind {
         case read, write
-        // The read key changed when reading grew from the page in front to every open page, so an approval
-        // given for the narrower wording isn't silently stretched to cover the wider one.
-        var trustPrefix: String { switch self { case .read: return "mcp-read-all"; case .write: return "mcp-write" } }
-        var declinedVerb: String { switch self { case .read: return "read"; case .write: return "act on" } }
+        // The read key changes whenever what reading shares grows (from the page in front to every open page, then
+        // from interface labels to all page text by default), so an approval given for less isn't silently
+        // stretched to cover more: the agent is asked once again, under the new wording.
+        var trustPrefix: String { switch self { case .read: return "mcp-read-text"; case .write: return "mcp-write" } }
+        var declinedVerb: String { switch self { case .read: return "read pages open in Satellite"; case .write: return "click and type on the page in front" } }
     }
 
-    private static func confirm(_ kind: Kind, label: String, window: NSWindow?) async -> AssistantSender.Answer {
+    static func askWithAlert(_ kind: Kind, label: String, window: NSWindow?) async -> AssistantSender.Answer {
         let alert = NSAlert()
         switch kind {
         case .read:
             alert.messageText = "Let \(label) read the pages open in Satellite?"
-            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read pages open in Satellite \u{2014} any tab of any app, of any loaded tab group, and the web assistants, not only the one in front: their URLs, titles and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.current.summary) (change this in Settings > General)."
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read pages open in Satellite \u{2014} any tab of any app, of any loaded tab group, and the web assistants, not only the one in front: their URLs, titles and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.forAgents.summary) (change this in Settings > General > Page text for agents)."
         case .write:
-            alert.messageText = "Let \(label) click and type on this page?"
-            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to click and type on the page open in the apps panel \u{2014} which can submit forms and change data, including in Salesforce. This isn\u{2019}t limited to one field or action: once allowed, it can act anywhere on the page without asking again. Only allow agents you trust with that."
+            alert.messageText = "Let \(label) click and type on the page in front?"
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to click and type on whichever page is in front in Satellite \u{2014} which can submit forms and change data, including in Salesforce. Allowed, it can act anywhere on that page; with \u{201C}Don\u{2019}t ask again\u{201D}, on whatever page is in front from now on, in any app, without asking. Only allow agents you trust with that."
         }
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Deny")
         alert.showsSuppressionButton = true
         alert.suppressionButton?.title = "Don\u{2019}t ask again for \(label)"
+        // An agent can ask while the window is closed (Satellite keeps running) or another app is in front. A sheet
+        // on a window no one can see would never be answered, and the agent would wait forever.
+        if let window, !window.isVisible { window.makeKeyAndOrderFront(nil) }
+        if !NSApp.isActive { NSApp.requestUserAttention(.criticalRequest) }
         let response: NSApplication.ModalResponse
         if let window {
             response = await withCheckedContinuation { continuation in
