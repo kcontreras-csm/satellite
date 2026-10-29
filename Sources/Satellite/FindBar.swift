@@ -96,9 +96,13 @@ final class FindBar: NSVisualEffectView, NSSearchFieldDelegate {
             button.target = self
             button.action = action
             button.setButtonType(.pushOnPushOff)
-            button.bezelStyle = .texturedRounded
+            // Drawn here (see `show(_:on:)`): the system bezel made on and off look almost the same.
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 6
             button.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
             button.widthAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 24).isActive = true
         }
         optionButton(regexButton, ".*", #selector(toggleRegex))
         optionButton(caseButton, "Aa", #selector(toggleCase))
@@ -250,9 +254,9 @@ final class FindBar: NSVisualEffectView, NSSearchFieldDelegate {
 
     private func syncOptions() {
         let options = FindOptions.current
-        regexButton.state = options.regex ? .on : .off
-        caseButton.state = options.caseSensitive ? .on : .off
-        wordButton.state = options.wholeWord ? .on : .off
+        show(regexButton, on: options.regex)
+        show(caseButton, on: options.caseSensitive)
+        show(wordButton, on: options.wholeWord)
         func tip(_ title: String, _ id: String) -> String {
             title + (ShortcutRegistry.shared.combo(for: id).map { " (\($0.glyphs))" } ?? "")
         }
@@ -260,6 +264,24 @@ final class FindBar: NSVisualEffectView, NSSearchFieldDelegate {
         caseButton.toolTip = tip("Match Case", "find.caseSensitive")
         wordButton.toolTip = tip("Match Whole Word", "find.wholeWord")
         field.placeholderString = options.regex ? "Find (regex)" : "Find in page"
+    }
+
+    /// A switch that's on is filled with the accent color, with white text; off, a faint fill. The system bezel made
+    /// on and off look almost the same, and the switches are remembered, so one left on (Match Case, say) quietly
+    /// changed every later search.
+    private func show(_ button: NSButton, on: Bool) {
+        button.state = on ? .on : .off
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            button.layer?.backgroundColor = (on ? NSColor.controlAccentColor : NSColor.labelColor.withAlphaComponent(0.08)).cgColor
+        }
+        button.attributedTitle = NSAttributedString(string: button.attributedTitle.string, attributes: [
+            .font: button.font ?? .systemFont(ofSize: 12), .foregroundColor: on ? NSColor.white : NSColor.labelColor,
+        ])
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        syncOptions()   // the fills are resolved for light or dark
     }
 
     // MARK: Events
