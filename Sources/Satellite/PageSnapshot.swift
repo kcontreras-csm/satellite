@@ -129,6 +129,14 @@ enum PageSnapshot {
         var frameBudget = 120_000
         /// At most this many clickable elements are listed (each with a selector), per page or frame.
         var interactiveLimit = 300
+        /// For an agent acting on the page (Satellite's MCP server), rather than a person writing an extension:
+        /// visible controls first, in the order they're shown, each with the shortest selector that finds it and a
+        /// link's address; and the page's visible text, a table row per line. Selectors are for using now, not for
+        /// keeping, so short beats stable.
+        var forAgent = false
+        /// With `forAgent`: about how many characters the list of controls and the visible text may take.
+        var interactiveChars = 25_000
+        var visibleText = 30_000
         /// The Settings > General option that decides `text`, named when text is left out.
         var textSetting = "Page text in snapshots"
     }
@@ -150,7 +158,11 @@ enum PageSnapshot {
     }
 
     private static func collect(in webView: WKWebView, frame: WKFrameInfo?, options: Options, budget: Int) async throws -> Captured {
-        let arguments: [String: Any] = ["options": ["text": options.text.rawValue, "budget": budget, "interactiveLimit": options.interactiveLimit]]
+        let arguments: [String: Any] = ["options": [
+            "text": options.text.rawValue, "budget": budget, "interactiveLimit": options.interactiveLimit,
+            "agent": options.forAgent, "interactiveChars": options.interactiveChars,
+            "visibleText": frame == nil ? options.visibleText : min(options.visibleText, budget),
+        ] as [String: Any]]
         let value: Any? = try await withThrowingTaskGroup(of: Any?.self) { group in
             group.addTask { @MainActor in
                 try await webView.callAsyncJavaScript(collectorScript, arguments: arguments, in: frame, contentWorld: .page)
@@ -178,6 +190,10 @@ enum PageSnapshot {
         var detail: String
         var stats: [String: Int]
         var interactive: [[String: Any]]
+        /// How many more controls there were than are listed (an agent's list has a size budget).
+        var interactiveOmitted: Int
+        /// With `forAgent`: the page's visible text, a line per block and a `|`-joined line per table row.
+        var visibleText: String
         var globals: [[String: Any]]
         var hints: [String]
         var scripts: [String]
@@ -194,6 +210,8 @@ enum PageSnapshot {
             detail = d["detail"] as? String ?? "full"
             stats = (d["stats"] as? [String: NSNumber])?.mapValues(\.intValue) ?? [:]
             interactive = d["interactive"] as? [[String: Any]] ?? []
+            interactiveOmitted = (d["interactiveOmitted"] as? NSNumber)?.intValue ?? 0
+            visibleText = d["visibleText"] as? String ?? ""
             globals = d["globals"] as? [[String: Any]] ?? []
             hints = d["hints"] as? [String] ?? []
             scripts = d["scripts"] as? [String] ?? []
@@ -253,14 +271,26 @@ enum PageSnapshot {
 
             if !page.interactive.isEmpty {
                 out += "### Interactive elements\n\n"
-                out += "Selectors use `>>` where the path enters a shadow root (`document.querySelector` cannot cross it; query the host's `shadowRoot` next).\n\n"
+                if options.forAgent {
+                    out += "Visible ones first, in the order they're shown. Pass a selector as it is to click_element or type_text (`>>` is where it enters a shadow root).\n\n"
+                } else {
+                    out += "Selectors use `>>` where the path enters a shadow root (`document.querySelector` cannot cross it; query the host's `shadowRoot` next).\n\n"
+                }
                 for item in page.interactive {
                     var line = "- `\(item["selector"] as? String ?? "?")`"
                     if let role = item["role"] as? String, !role.isEmpty { line += " \(role)" }
                     if let text = item["text"] as? String, !text.isEmpty { line += " \u{201C}\(text)\u{201D}" }
+                    if let href = item["href"] as? String, !href.isEmpty { line += " \u{2192} \(href)" }
+                    if item["hidden"] as? Bool == true { line += " (hidden)" }
                     out += line + "\n"
                 }
+                if page.interactiveOmitted > 0 { out += "- \u{2026}and \(page.interactiveOmitted) more, not listed (to keep the answer within an agent\u{2019}s limit)\n" }
                 out += "\n"
+            }
+
+            if !page.visibleText.isEmpty {
+                out += "### Visible text\n\nWhat the page shows, in order: a line per block, and a line per table row with its cells separated by `|`.\n\n"
+                out += "````text\n\(page.visibleText)\n````\n\n"
             }
 
             out += "### HTML\n\n````html\n\(page.html)\n````\n\n"
@@ -522,19 +552,150 @@ enum PageSnapshot {
       return segments.join(' ');
     };
     const INTERACTIVE = 'a[href],button,input,select,textarea,summary,[role=button],[role=tab],[role=menuitem],[role=link],[role=checkbox],[role=switch],[role=combobox],[role=option],[contenteditable=true],[tabindex]:not([tabindex="-1"]),lightning-button,lightning-button-icon,lightning-input,lightning-combobox,lightning-menu-item';
-    const interactive = [];
-    const seenControls = new Set();
-    for (const root of roots) {
-      for (const el of root.querySelectorAll(INTERACTIVE)) {
-        if (interactive.length >= interactiveLimit || seenControls.has(el)) continue;
-        seenControls.add(el);
-        const labelText = mode === 'none' ? '' : (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('label') || el.textContent || '');
-        interactive.push({
-          selector: selectorFor(el),
-          role: el.getAttribute('role') || (el.localName === 'input' ? 'input:' + (el.getAttribute('type') || 'text') : el.localName),
-          text: isLabelish(el) || el.localName === 'input' || mode === 'full' ? trunc(labelText.replace(/\s+/g, ' ').trim(), 60) : '',
-        });
+    const agent = !!(options && options.agent);
+    const interactiveChars = agent ? ((options && options.interactiveChars) || 25000) : Infinity;
+    const textBudget = agent && mode === 'full' ? ((options && options.visibleText) || 0) : 0;
+
+    // Elements in the order they're shown: each element, then its shadow tree, then its children.
+    function* composed(node) {
+      for (let child = node.firstElementChild; child; child = child.nextElementSibling) {
+        yield child;
+        if (child.shadowRoot) yield* composed(child.shadowRoot);
+        yield* composed(child);
       }
+    }
+    const visible = (el) => {
+      try { if (el.checkVisibility) return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch (e) {}
+      return el.getClientRects().length > 0;
+    };
+    // A composed tree's text (into shadow roots too), for a control whose label is drawn by its component.
+    const composedText = (el) => {
+      let out = '';
+      const walk = (node) => {
+        for (let child = node.firstChild; child && out.length < 200; child = child.nextSibling) {
+          if (child.nodeType === 3) out += child.nodeValue + ' ';
+          else if (child.nodeType === 1 && !/^(script|style|template)$/.test(child.localName)) {
+            if (child.shadowRoot) walk(child.shadowRoot);
+            walk(child);
+          }
+        }
+      };
+      if (el.shadowRoot) walk(el.shadowRoot);
+      walk(el);
+      return out;
+    };
+
+    // For an agent: the shortest selector that finds `el`. Within each root it climbs only until what it has is
+    // unique there, then goes on from the host after `>>`. (An extension wants the longer, steadier `selectorFor`.)
+    const uniqueIn = (root, selector) => { try { return root.querySelectorAll(selector).length === 1; } catch (e) { return false; } };
+    const shortSelectorFor = (el) => {
+      const parts = [];
+      let node = el;
+      while (node && node.nodeType === 1) {
+        const root = node.getRootNode();
+        const segments = [];
+        let n = node;
+        for (let depth = 0; n && n.nodeType === 1 && depth < 8; depth++) {
+          if (n.id && !/\d{3,}|[0-9a-f]{8}-/i.test(n.id)) {
+            segments.unshift('#' + cssEscape(n.id));
+          } else {
+            let part = n.localName;
+            const classes = Array.from(n.classList || []).filter((c) => !/\d{3,}/.test(c)).slice(0, 2);
+            if (classes.length) part += '.' + classes.map(cssEscape).join('.');
+            const parent = n.parentElement;
+            if (parent) {
+              const same = Array.from(parent.children).filter((c) => c.localName === n.localName);
+              if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+            }
+            segments.unshift(part);
+          }
+          if (uniqueIn(root, segments.join(' '))) break;
+          n = n.parentElement;
+        }
+        parts.unshift(segments.join(' '));
+        const host = root && root.host;
+        if (!host) break;
+        node = host;
+      }
+      return parts.join(' >> ');
+    };
+
+    const interactive = [];
+    let interactiveOmitted = 0;
+    const describe = (el, hidden) => {
+      const labelText = mode === 'none' ? '' : (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('label') || (agent ? composedText(el) : el.textContent) || '');
+      const item = {
+        selector: agent ? shortSelectorFor(el) : selectorFor(el),
+        role: el.getAttribute('role') || (el.localName === 'input' ? 'input:' + (el.getAttribute('type') || 'text') : el.localName),
+        text: isLabelish(el) || el.localName === 'input' || mode === 'full' ? trunc(labelText.replace(/\s+/g, ' ').trim(), 60) : '',
+      };
+      if (agent && el.localName === 'a' && el.getAttribute('href')) item.href = safeUrl(el.getAttribute('href'));
+      if (hidden) item.hidden = true;
+      return item;
+    };
+    if (agent) {
+      // Visible controls first, in the order they're shown, then hidden ones (other console tabs, closed menus),
+      // until the count or the size budget runs out; then just how many more there were.
+      const shown = [], hiddenOnes = [];
+      for (const el of composed(document)) {
+        if (el.matches(INTERACTIVE)) (visible(el) ? shown : hiddenOnes).push(el);
+      }
+      let size = 0;
+      for (const [el, hidden] of shown.map((el) => [el, false]).concat(hiddenOnes.map((el) => [el, true]))) {
+        if (interactive.length >= interactiveLimit || size >= interactiveChars) { interactiveOmitted++; continue; }
+        const item = describe(el, hidden);
+        size += item.selector.length + item.text.length + (item.href || '').length + 16;
+        interactive.push(item);
+      }
+    } else {
+      const seenControls = new Set();
+      for (const root of roots) {
+        for (const el of root.querySelectorAll(INTERACTIVE)) {
+          if (interactive.length >= interactiveLimit || seenControls.has(el)) continue;
+          seenControls.add(el);
+          interactive.push(describe(el, false));
+        }
+      }
+    }
+
+    // For an agent: what the page shows, as text. A table row is one line, its cells joined by `|`, so a list
+    // of cases reads as one line per case, however large the page (the HTML above drops repeated rows when
+    // it has to shrink).
+    let visibleText = '';
+    if (textBudget > 0) {
+      const BLOCK = new Set(['address','article','aside','blockquote','dd','details','dialog','div','dl','dt','fieldset','figcaption','figure',
+        'footer','form','h1','h2','h3','h4','h5','h6','header','hr','li','main','nav','ol','p','pre','section','summary','table','ul','br','label','option']);
+      const SKIP = new Set(['script','style','noscript','template','svg','head','iframe','frame','select']);
+      const lines = [];
+      let size = 0, line = '';
+      const flush = () => {
+        const t = line.replace(/\s+/g, ' ').trim();
+        line = '';
+        if (t && t !== lines[lines.length - 1]) { lines.push(t); size += t.length + 1; }
+      };
+      const isRow = (el) => el.localName === 'tr' || el.getAttribute('role') === 'row';
+      const cellsOf = (row) => Array.from(row.children).filter((c) => /^(td|th)$/.test(c.localName) || /^(cell|gridcell|columnheader|rowheader)$/.test(c.getAttribute('role') || ''));
+      const walk = (node) => {
+        for (let child = node.firstChild; child && size < textBudget; child = child.nextSibling) {
+          if (child.nodeType === 3) { line += child.nodeValue + ' '; continue; }
+          if (child.nodeType !== 1 || SKIP.has(child.localName) || !visible(child)) continue;
+          if (isRow(child)) {
+            flush();
+            line = cellsOf(child).map((cell) => composedText(cell).replace(/\s+/g, ' ').trim()).filter(Boolean).join(' | ');
+            flush();
+            continue;
+          }
+          const block = BLOCK.has(child.localName);
+          if (block) flush();
+          if (child.shadowRoot) walk(child.shadowRoot);
+          walk(child);
+          if (block) flush();
+        }
+      };
+      if (document.body) walk(document.body);
+      flush();
+      visibleText = lines.join('\n');
+      if (visibleText.length > textBudget) visibleText = visibleText.slice(0, textBudget) + '\n…(the rest of the page’s text didn’t fit)';
     }
 
     // Page-level details only come from the main page.
@@ -580,7 +741,7 @@ enum PageSnapshot {
       title: document.title || '',
       language: document.documentElement.lang || '',
       viewport: window.innerWidth + '×' + window.innerHeight,
-      html, detail, stats, interactive, globals, hints, scripts, styles, meta,
+      html, detail, stats, interactive, interactiveOmitted, visibleText, globals, hints, scripts, styles, meta,
     };
     """#
 }

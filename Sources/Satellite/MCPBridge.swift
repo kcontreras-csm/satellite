@@ -134,8 +134,25 @@ final class MCPBridge {
                 guard let selector = request["selector"] as? String, !selector.isEmpty else {
                     return ["ok": false, "error": "A selector is required."]
                 }
-                let found = try await PageInteraction.click(pane.webView, selector: selector)
-                return found ? ["ok": true, "text": "Clicked \(selector)."] : ["ok": false, "error": "No element matched \(selector)."]
+                let before = (url: pane.webView.url, title: pane.webView.title)
+                guard let clicked = try await PageInteraction.click(pane.webView, selector: selector) else {
+                    return ["ok": false, "error": "No element matched \(selector). Read the page again for current selectors."]
+                }
+                var text = "Clicked " + (clicked.inside ?? selector) + "."
+                // Whether it led somewhere (a single-page app like Lightning changes its address without loading).
+                let end = Date().addingTimeInterval(2)
+                while Date() < end, pane.webView.url == before.url, pane.webView.title == before.title {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
+                if pane.webView.url != before.url || pane.webView.title != before.title {
+                    // The address changes first; let the new page load (and name itself) before saying what it is.
+                    let settle = Date().addingTimeInterval(3)
+                    while Date() < settle, pane.webView.isLoading { try await Task.sleep(nanoseconds: 100_000_000) }
+                    text += " The page is now \u{201C}\(pane.webView.title ?? "")\u{201D} \(pane.webView.url?.absoluteString ?? "")."
+                } else {
+                    text += " The page\u{2019}s address and title didn\u{2019}t change (fine for a button that acts in place; if it should have opened something, it may not have)."
+                }
+                return ["ok": true, "text": text]
             case "type":
                 guard let selector = request["selector"] as? String, !selector.isEmpty, let text = request["text"] as? String else {
                     return ["ok": false, "error": "A selector and text are required."]
@@ -161,9 +178,14 @@ final class MCPBridge {
         var options = PageSnapshot.Options(forAssistant: true)
         options.text = SnapshotTextMode.forAgents
         options.textSetting = "Page text for agents"
-        options.mainBudget = max(8_000, 60_000 / count)
-        options.frameBudget = max(2_000, 12_000 / count)
-        options.interactiveLimit = max(25, 300 / count)   // each listed with its selector, ~70 characters
+        // The answer's room, about 90,000 characters, goes to what an agent uses most: the controls it can act on,
+        // and the page's text; the HTML gets what's left.
+        options.forAgent = true
+        options.interactiveLimit = max(25, 300 / count)
+        options.interactiveChars = max(4_000, 25_000 / count)
+        options.visibleText = max(5_000, 30_000 / count)
+        options.mainBudget = max(5_000, 25_000 / count)
+        options.frameBudget = max(2_000, 6_000 / count)
         return try await PageSnapshot.capture(pane.webView, options: options)
     }
 

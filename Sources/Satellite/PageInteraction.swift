@@ -12,10 +12,18 @@ struct PageInteractionError: LocalizedError {
 /// agent before any of this runs, because clicking and typing can submit forms and change data.
 @MainActor
 enum PageInteraction {
-    /// Clicks the element `selector` resolves to. Returns whether it was found.
-    static func click(_ webView: WKWebView, selector: String) async throws -> Bool {
+    struct Clicked {
+        /// What was clicked when `selector` named something that isn't itself a control (a table cell, say) and
+        /// held one: that control, like "the link “475961231”"; nil when the element itself was clicked.
+        let inside: String?
+    }
+
+    /// Clicks the element `selector` resolves to, or, if that isn't a control, the first control inside it (as
+    /// clicking a cell clicks its link). Nil if nothing matched.
+    static func click(_ webView: WKWebView, selector: String) async throws -> Clicked? {
         let result = try await run(clickScript, in: webView, arguments: ["selector": selector])
-        return result["found"] as? Bool ?? false
+        guard result["found"] as? Bool == true else { return nil }
+        return Clicked(inside: result["inside"] as? String)
     }
 
     /// Replaces the content of the field (or contenteditable element) `selector` resolves to with `text`, then,
@@ -59,13 +67,34 @@ enum PageInteraction {
     }
     """#
 
-    private static let clickScript = resolver + #"""
+    /// What counts as a control to click, and the first one inside an element (into shadow roots too).
+    private static let controls = #"""
+    const CONTROL = 'a[href],button,input,select,textarea,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=switch],[role=option],[contenteditable=true]';
+    function __satelliteFirstControl(el) {
+      const search = (node) => {
+        for (let child = node.firstElementChild; child; child = child.nextElementSibling) {
+          if (child.matches(CONTROL)) return child;
+          const found = (child.shadowRoot && search(child.shadowRoot)) || search(child);
+          if (found) return found;
+        }
+        return null;
+      };
+      return (el.shadowRoot && search(el.shadowRoot)) || search(el);
+    }
+    """#
+
+    private static let clickScript = resolver + controls + #"""
 
     const el = __satelliteResolve(selector);
     if (!el) return { found: false };
-    el.scrollIntoView({ block: 'center', inline: 'center' });
-    el.click();
-    return { found: true };
+    // A cell or a wrapper holds the link or button; clicking it the way a person would means clicking that.
+    const target = el.matches(CONTROL) ? el : (__satelliteFirstControl(el) || el);
+    target.scrollIntoView({ block: 'center', inline: 'center' });
+    target.click();
+    if (target === el) return { found: true };
+    const name = (target.getAttribute('aria-label') || target.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const kind = target.localName === 'a' ? 'link' : (target.getAttribute('role') || target.localName);
+    return { found: true, inside: 'the ' + kind + (name ? ' “' + name + '”' : '') + ' inside it' };
     """#
 
     private static let typeScript = resolver + #"""
@@ -74,13 +103,18 @@ enum PageInteraction {
     if (!el) return { found: false };
     el.scrollIntoView({ block: 'center', inline: 'center' });
     el.focus();
-    const isField = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+    // A component (lightning-input, say) passes focus to a field in its own shadow root: type where focus went.
+    let field = el;
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    if (active && active !== el && (el.contains(active) || (el.shadowRoot && active.getRootNode() !== document))) field = active;
+    const isField = field.tagName === 'INPUT' || field.tagName === 'TEXTAREA';
     if (isField) {
-      el.select();
-    } else if (el.isContentEditable) {
+      field.select();
+    } else if (field.isContentEditable) {
       // Select what's there, so the text typed below replaces it (as in a field) instead of going in at the caret.
       const range = document.createRange();
-      range.selectNodeContents(el);
+      range.selectNodeContents(field);
       const selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
@@ -89,20 +123,23 @@ enum PageInteraction {
     if (document.execCommand && document.execCommand('insertText', false, text)) {
       inserted = true;
     } else if (isField) {
-      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: text }));
+      const proto = field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(field, text);
+      field.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertReplacementText', data: text }));
       inserted = true;
-    } else if (el.isContentEditable) {
-      el.textContent = text;
-      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertReplacementText', data: text }));
+    } else if (field.isContentEditable) {
+      field.textContent = text;
+      field.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertReplacementText', data: text }));
       inserted = true;
     }
     if (inserted && pressEnter) {
       for (const type of ['keydown', 'keypress', 'keyup']) {
-        el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        const event = new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true });
+        // The constructor leaves the legacy codes at 0, and Lightning (like many pages) checks keyCode === 13.
+        for (const legacy of ['keyCode', 'which', 'charCode']) Object.defineProperty(event, legacy, { get: () => 13 });
+        field.dispatchEvent(event);
       }
-      if (el.form && typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+      if (field.form && typeof field.form.requestSubmit === 'function') field.form.requestSubmit();
     }
     return { found: true, inserted };
     """#
