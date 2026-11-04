@@ -178,7 +178,10 @@ final class TabButton: NSView {
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.lineBreakMode = .byTruncatingTail
         label.stringValue = title
+        toolTip = title   // the whole title, for when a crowded bar has cut it short
         label.translatesAutoresizingMaskIntoConstraints = false
+        // The title gives way (truncating) before the bar does, so a crowded bar shrinks its tabs (see TabBarView).
+        label.setContentCompressionResistancePriority(.init(200), for: .horizontal)
         addSubview(label)
 
         closeButton.isBordered = false
@@ -211,7 +214,10 @@ final class TabButton: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    func setTitle(_ title: String) { label.stringValue = title }
+    func setTitle(_ title: String) {
+        label.stringValue = title
+        toolTip = title
+    }
 
     override func layout() {
         super.layout()
@@ -315,7 +321,13 @@ final class TabBarView: NSView {
     var onChipClick: (() -> Void)?
 
     private let stack = NSStackView()
+    private let scroll = TabStripScrollView()
+    /// The tab selected when the bar was last shown, so a rebuild for a title change doesn't scroll it back.
+    private var shownSelection: (index: Int, count: Int)?
 
+    // The tabs sit in a strip as wide as the bar, which can only grow past it: when they don't fit, they shrink
+    // (their titles truncate) down to a tab's minimum width, and past that the strip scrolls sideways. Without
+    // it, a tab's minimum width was a requirement on the bar itself, so many tabs widened the whole window.
     override init(frame: NSRect) {
         super.init(frame: frame)
         stack.orientation = .horizontal
@@ -323,17 +335,43 @@ final class TabBarView: NSView {
         stack.alignment = .centerY
         stack.distribution = .fill   // the chip is narrower than the tabs; .fillEqually would stretch it
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+
+        let strip = NSView()
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.addSubview(stack)
+        scroll.documentView = strip
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.verticalScrollElasticity = .none
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scroll)
 
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
         addSubview(separator)
 
+        let clip = scroll.contentView
+        let fill = strip.widthAnchor.constraint(equalTo: clip.widthAnchor)
+        // Above a title's resistance to truncating (200), so tabs shrink to fit; below the window holding its size
+        // (windowSizeStayPut, 500), so past their minimum the strip scrolls rather than the window growing.
+        fill.priority = .init(450)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -1),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: separator.topAnchor),
+            strip.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            strip.topAnchor.constraint(equalTo: clip.topAnchor),
+            strip.heightAnchor.constraint(equalTo: clip.heightAnchor),
+            strip.widthAnchor.constraint(greaterThanOrEqualTo: clip.widthAnchor),
+            fill,
+            stack.leadingAnchor.constraint(equalTo: strip.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: strip.trailingAnchor, constant: -10),
+            stack.centerYAnchor.constraint(equalTo: strip.centerYAnchor),
             separator.leadingAnchor.constraint(equalTo: leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -360,5 +398,27 @@ final class TabBarView: NSView {
             button.makeMenu = { [weak self] in self?.menuForTab?(index) }
             stack.addArrangedSubview(button)
         }
+        // A newly selected (or opened) tab is scrolled into view; a rebuild for a title change leaves the
+        // scrolling where the user put it.
+        let selection = (index: group.selectedIndex, count: group.tabs.count)
+        if shownSelection.map({ $0 != selection }) ?? true, let selected = stack.arrangedSubviews.compactMap({ $0 as? TabButton }).first(where: \.isSelected) {
+            layoutSubtreeIfNeeded()
+            selected.scrollToVisible(selected.bounds.insetBy(dx: -12, dy: 0))
+        }
+        shownSelection = selection
+    }
+}
+
+/// The tab strip's scroller. A mouse's wheel only scrolls up and down, so that scrolls it sideways too.
+final class TabStripScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        guard abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX), let strip = documentView else { return super.scrollWheel(with: event) }
+        let room = strip.frame.width - contentView.bounds.width
+        guard room > 0 else { return }   // nothing to scroll; don't pass it on and scroll a page behind
+        let step = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10
+        var origin = contentView.bounds.origin
+        origin.x = min(max(0, origin.x - step), room)
+        contentView.scroll(to: origin)
+        reflectScrolledClipView(contentView)
     }
 }

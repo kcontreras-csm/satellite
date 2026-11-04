@@ -67,7 +67,9 @@ MainActor.assumeIsolated {
 
     // The real tab bar of the content area: right-click its second tab.
     pump(0.3)
-    let realTabs = content.view.subviews.compactMap { $0 as? TabBarView }.first.map { $0.subviews.flatMap(\.subviews).compactMap { $0 as? TabButton } } ?? []
+    // Tab buttons sit inside the bar's scrolling strip, so look through the whole tree.
+    func tabButtons(in view: NSView) -> [TabButton] { ((view as? TabButton).map { [$0] } ?? []) + view.subviews.flatMap { tabButtons(in: $0) } }
+    let realTabs = content.view.subviews.compactMap { $0 as? TabBarView }.first.map { tabButtons(in: $0) } ?? []
     let rightClick = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
                                         context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     let firstTabMenu = realTabs.first?.menu(for: rightClick), secondTabMenu = realTabs.dropFirst().first?.menu(for: rightClick)
@@ -90,8 +92,8 @@ MainActor.assumeIsolated {
     let barTabs = TabGroup(name: "OrgCS", url: URL(string: "https://example.com/")!, opensAllLinksInTabs: false)
     _ = barTabs.openTab(configuration: WebEnvironment.makeConfiguration())   // a second tab, selected
     bar.show(barTabs)
-    let tabButtons = bar.subviews.flatMap(\.subviews).compactMap { $0 as? TabButton }
-    check(tabButtons.count == 2 && tabButtons[1].menu(for: click)?.title == "tab 1" && asked == [1], "right-clicking a tab asks for that tab\u{2019}s menu")
+    let barButtons = tabButtons(in: bar)
+    check(barButtons.count == 2 && barButtons[1].menu(for: click)?.title == "tab 1" && asked == [1], "right-clicking a tab asks for that tab\u{2019}s menu")
     let rail = RailViewController()
     _ = rail.view
     var railAsked: [String] = []
@@ -178,6 +180,29 @@ MainActor.assumeIsolated {
     let editingMenu = (addressBar.field.currentEditor() as? NSTextView)?.menu(for: rightClickBar)
     check(editingMenu?.items.contains { $0.title == "Copy" } == true && editingMenu?.items.last?.title == "Add to Group",
           "while it\u{2019}s being typed in, its menu keeps Copy and ends with Add to Group")
+
+    // Many tabs shrink, then scroll; they never widen the window (a tab's minimum width used to be a requirement on
+    // the whole window, so 25 tabs made it nearly 6,000pt wide).
+    mainWindow.makeFirstResponder(nil)
+    if let host = controller.currentWebsitePane?.tabHost {
+        let widthBefore = mainWindow.frame.width
+        for n in 0..<30 {
+            host.openTab(configuration: WebEnvironment.makeConfiguration()).webView.loadHTMLString("<title>Case \(475961000 + n) | Salesforce</title>", baseURL: nil)
+        }
+        pump(1.2)
+        let bar = mainWindow.contentView.flatMap { root -> TabBarView? in
+            func find(_ v: NSView) -> TabBarView? { (v as? TabBarView) ?? v.subviews.lazy.compactMap(find).first }
+            return find(root)
+        }
+        let buttons = bar.map { tabButtons(in: $0) } ?? []
+        let selectedInView = buttons.first(where: \.isSelected).map { button in
+            bar!.convert(bar!.bounds, to: nil).contains(button.convert(button.bounds, to: nil).insetBy(dx: 1, dy: 1))
+        } ?? false
+        check(mainWindow.frame.width == widthBefore && buttons.count == 31, "31 tabs leave the window \(Int(widthBefore))pt wide (it's \(Int(mainWindow.frame.width))pt)")
+        check(selectedInView, "the bar scrolls to keep the selected (newest) tab in view")
+    } else {
+        check(false, "an app's tabs to fill")
+    }
 }
 print(failures == 0 ? "\nAll link checks passed." : "\n\(failures) failed.")
 exit(failures == 0 ? 0 : 1)
