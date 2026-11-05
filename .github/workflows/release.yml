@@ -14,7 +14,7 @@ permissions:
 jobs:
   release:
     # Satellite targets macOS 14+. If a newer SDK is ever required, pin a newer runner label here.
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
