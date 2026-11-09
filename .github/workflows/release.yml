@@ -13,12 +13,24 @@ permissions:
 
 jobs:
   release:
-    # Satellite targets macOS 14+. If a newer SDK is ever required, pin a newer runner label here.
-    runs-on: macos-15
+    # Satellite targets macOS 14+, but builds with Swift 6.2 or newer (SwiftTerm's manifest needs it), which
+    # comes with Xcode 26.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Select Xcode
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -Ev 'beta|Release_Candidate|RC' | sort -V | tail -1)"
+          [[ -n "$XCODE" ]] && sudo xcode-select -s "$XCODE/Contents/Developer"
+          swift --version
+          SWIFT="$(swift --version 2>&1 | sed -nE 's/.*Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+          if [[ "$(printf '%s\n' 6.2 "$SWIFT" | sort -V | head -1)" != "6.2" ]]; then
+            echo "Swift $SWIFT is too old; SwiftTerm needs 6.2 or newer. Pin a newer runner image above."
+            exit 1
+          fi
 
       - name: Ensure the tag is on main
         run: |
