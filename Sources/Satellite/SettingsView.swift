@@ -682,6 +682,7 @@ private struct GeneralSettings: View {
     @AppStorage(SnapshotDefaults.agentTextMode) private var agentText = SnapshotTextMode.full.rawValue
     @AppStorage(CodeEditor.defaultsKey) private var editorChoice = ""
     @AppStorage(AppAppearance.defaultsKey) private var appearance = AppAppearance.system.rawValue
+    @AppStorage(RailPosition.defaultsKey) private var railPosition = RailPosition.left.rawValue
 
     private var versionText: String {
         let build = Bundle.main.infoDictionary?["SatelliteBuild"] as? String
@@ -696,6 +697,14 @@ private struct GeneralSettings: View {
             .pickerStyle(.segmented)
             .onChange(of: appearance) { _, value in AppAppearance.apply(AppAppearance(rawValue: value) ?? .system) }
             Text("For all of Satellite. Web pages with a dark mode of their own (Claude, Slack\u{2026}) follow it; others, like Salesforce, stay as they are. Extensions can tell which is active, and how the page looks, from satellite.appearance.")
+                .font(.footnote).foregroundStyle(.secondary)
+
+            Picker("Apps bar", selection: $railPosition) {
+                ForEach(RailPosition.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: railPosition) { _, _ in NotificationCenter.default.post(name: RailPosition.changed, object: nil) }
+            Text("Where your apps are listed: down the left side of the window, or along the top under the toolbar. Groups and Settings go to the opposite end of the bar.")
                 .font(.footnote).foregroundStyle(.secondary)
 
             Divider()

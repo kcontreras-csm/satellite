@@ -2,7 +2,7 @@
 
 A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in one window.
 
-- **Left rail:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch).
+- **Apps bar:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch), as a rail down the left side or, with **Settings > General > Apps bar**, a bar along the top (see below).
 - **Right panel:** Claude, Gemini, Slackbot and a Terminal (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`). The **⋯** button beside the switcher picks the dock side, as in a browser's developer tools: **Main Window** (on the right) or **Separate Window**, which you can place on another screen. The same choice is in View > Dock Assistants.
 - **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, Slack sign-in, website data (clear one site, only the cache so you stay signed in, or everything).
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
@@ -73,6 +73,10 @@ A tab group keeps pages from any apps or addresses together under a name and a c
 Closing one of a group's tabs only closes it for now — the page stays in the group, and **Load** reopens it; **Remove from Group** (right-click the tab) takes it out. Closing a group's last tab unloads the group. A link one of its pages opens in a new tab becomes a tab of the group for the session but isn't saved unless you right-click it and choose **Keep in Group**. Pages are saved at the address they were added with, not wherever you navigate them to, since sign-in redirects can put tokens in an address.
 
 **Importing from Chrome.** The Groups view's **Import from Chrome…** scans Chrome's own session files on disk for URLs that look like open tabs, lets you check off which ones to bring in, and saves the checked ones as a new group ("From Chrome"), not loaded until you Load or Open it. This is best-effort, not exact: Chrome's session format is internal, undocumented and unversioned for outside tools, so the scan reads raw bytes for recognizable `http(s)://` strings rather than parsing it structurally. That means it can surface pages you've since navigated away from (a tab's history, not just what's currently open), and it never recovers Chrome's own tab groups — Chrome doesn't expose group names or colors here at all, only Chrome itself knows them. Review the list before importing; nothing is opened until you do.
+
+## Apps bar position
+
+Your apps (with **Groups** and **Settings**) are a rail down the left side of the window by default. **Settings > General > Apps bar** switches between **Left** and **Top**, and takes effect at once. On top, the rail folds away and a slim bar under the toolbar lists the apps, each with its icon and name, from the leading edge; Groups and Settings sit at the trailing end. Badges, the right-click menu, tooltips and `Cmd+1..9` work the same in both, and the address bar stays centered. With many apps in a narrow window the top bar overflows rather than scrolling, so use the left rail if you have more than fit.
 
 ## Address bar
 

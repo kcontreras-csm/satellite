@@ -143,6 +143,11 @@ final class AddressBar: NSView {
 final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolbarItemValidation, NSTextFieldDelegate {
     private let registry = UIRegistry.shared
     private let railVC = RailViewController()
+    /// The same buttons along the top (Settings > General > Apps bar), shown instead of the rail down the left.
+    private let topBarVC = RailViewController(orientation: .horizontal)
+    private let topBarAccessory = NSTitlebarAccessoryViewController()
+    private let railItem: NSSplitViewItem
+    private var rails: [RailViewController] { [railVC, topBarVC] }
     private let contentVC = ContentViewController()
     private let assistantsVC = AssistantsViewController()
     private let splitVC: NSSplitViewController
@@ -162,9 +167,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
 
     init(openSettings: @escaping () -> Void) {
         let split = NSSplitViewController()
-        let railItem = NSSplitViewItem(sidebarWithViewController: railVC)
-        railItem.minimumThickness = 76
-        railItem.maximumThickness = 76
+        railItem = NSSplitViewItem(sidebarWithViewController: railVC)
+        railItem.minimumThickness = Self.railWidth
+        railItem.maximumThickness = Self.railWidth
         railItem.canCollapse = false
         let contentItem = NSSplitViewItem(viewController: contentVC)
         contentItem.minimumThickness = 480
@@ -213,10 +218,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         }
         applyAddressEditability()
 
-        railVC.onSelect = { [weak self] in self?.selectApp($0) }
-        railVC.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
-        railVC.onOpenSettings = openSettings
-        railVC.onOpenGroups = { [weak self] in self?.showGroupsList() }
+        for rail in rails {
+            rail.onSelect = { [weak self] in self?.selectApp($0) }
+            rail.menuForApp = { [weak self] in self?.contentVC.appMenu(for: $0) }
+            rail.onOpenSettings = openSettings
+            rail.onOpenGroups = { [weak self] in self?.showGroupsList() }
+        }
+        topBarAccessory.view = topBarVC.view
+        topBarAccessory.layoutAttribute = .bottom
+        window.addTitlebarAccessoryViewController(topBarAccessory)
         contentVC.onSelectionChange = { [weak self] in self?.selectionChanged() }
         let groupsList = NSHostingView(rootView: GroupsListView(
             model: .shared, groups: contentVC.satelliteGroups, open: { [weak self] in self?.openGroup($0) }))
@@ -235,6 +245,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
             },
             center.addObserver(forName: UIRegistry.changed, object: nil, queue: .main) { [weak self] _ in
                 self?.applyItems()
+            },
+            center.addObserver(forName: RailPosition.changed, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.applyRailPosition() }
             },
             center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
                 self?.fitAddressBar()
@@ -260,6 +273,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         ]
 
         applyItems()
+        applyRailPosition()
 
         assistantsVC.isDetached = { [weak self] in self?.isAssistantsDetached ?? false }
         assistantsVC.onSetDetached = { [weak self] detached in
@@ -295,7 +309,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     private func applyItems() {
         let apps = registry.items(.apps)
         contentVC.setItems(apps)
-        railVC.setItems(apps)
+        rails.forEach { $0.setItems(apps) }
         assistantsVC.setItems(registry.items(.assistants))
 
         switch contentVC.selection {
@@ -331,16 +345,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     private func selectionChanged() {
         switch contentVC.selection {
         case .app(let id):
-            railVC.setGroupsSelected(false)
-            railVC.setSelected(id)
+            rails.forEach { $0.setGroupsSelected(false); $0.setSelected(id) }
             window?.title = registry.items(.apps).first { $0.id == id }?.name ?? ""
         case .groupsList:
-            railVC.setSelected(nil)
-            railVC.setGroupsSelected(true)
+            rails.forEach { $0.setSelected(nil); $0.setGroupsSelected(true) }
             window?.title = "Tab Groups"
         case .group(let id):
-            railVC.setSelected(nil)
-            railVC.setGroupsSelected(true)
+            rails.forEach { $0.setSelected(nil); $0.setGroupsSelected(true) }
             window?.title = contentVC.satelliteGroups.group(id)?.name ?? "Tab Groups"
         case nil:
             break
@@ -722,6 +733,24 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// leaves the bar more slack): Back and Forward end 90pt into the page column; Reload, New Tab, Page for AI and
     /// the panel toggle start 215pt before the window's trailing edge.
     private static let leadingButtonsWidth: CGFloat = 90
+    private static let railWidth: CGFloat = 76
+
+    /// Moves the apps between the rail down the left and the bar along the top (Settings > General > Apps bar).
+    /// Without the rail the page column starts at the window's edge, and the toolbar's buttons still start after the
+    /// traffic lights, which the rail used to sit behind.
+    private func applyRailPosition() {
+        let top = RailPosition.current == .top
+        if top {
+            railItem.canCollapse = true
+            railItem.isCollapsed = true
+        } else {
+            railItem.isCollapsed = false
+            railItem.canCollapse = false
+        }
+        topBarAccessory.isHidden = !top
+        window?.layoutIfNeeded()
+        fitAddressBar()
+    }
     private static let trailingButtonsWidth: CGFloat = 215
 
     /// The toolbar centers the bar over the page column (between the rail and the assistants panel) but won't
@@ -739,7 +768,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         let column = contentVC.view.convert(contentVC.view.bounds, to: nil)
         guard column.width > 0 else { return }
         let gap: CGFloat = 12
-        let left = column.midX - (column.minX + Self.leadingButtonsWidth + gap)
+        // Back and Forward end the same distance from the window's edge in both layouts: the traffic lights'
+        // room (what the rail's width covers) plus their own width.
+        let left = column.midX - (Self.railWidth + Self.leadingButtonsWidth + gap)
         let right = min(column.maxX, window.frame.width - Self.trailingButtonsWidth) - gap - column.midX
         addressBar.fit(width: 2 * min(left, right))
     }

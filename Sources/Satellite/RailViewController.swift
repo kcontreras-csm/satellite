@@ -16,26 +16,29 @@ final class RailButton: NSControl {
         didSet { refreshAppearance() }
     }
 
+    /// Compact tiles sit in the top bar: icon and label side by side, as wide as they need to be.
+    private let compact: Bool
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private let badgePill = NSView()
     private let badgeLabel = NSTextField(labelWithString: "")
 
-    init(title: String, symbol: String, tooltip: String, badge: String?) {
+    init(title: String, symbol: String, tooltip: String, badge: String?, compact: Bool = false) {
+        self.compact = compact
         super.init(frame: NSRect(origin: .zero, size: Self.size))
 
         iconView.imageScaling = .scaleProportionallyDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
-        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.font = .systemFont(ofSize: compact ? 12 : 10, weight: .medium)
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [iconView, label])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 3
+        stack.orientation = compact ? .horizontal : .vertical
+        stack.alignment = compact ? .centerY : .centerX
+        stack.spacing = compact ? 6 : 3
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -51,14 +54,28 @@ final class RailButton: NSControl {
         addSubview(badgePill)
 
         // Every icon gets the same slot, so differently shaped symbols line up.
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -2),
-            iconView.widthAnchor.constraint(equalToConstant: 30),
-            iconView.heightAnchor.constraint(equalToConstant: 24),
-            widthAnchor.constraint(equalToConstant: Self.size.width),
-            heightAnchor.constraint(equalToConstant: Self.size.height),
+        var layout: [NSLayoutConstraint]
+        if compact {
+            layout = [
+                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+                stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+                iconView.widthAnchor.constraint(equalToConstant: 22),
+                iconView.heightAnchor.constraint(equalToConstant: 20),
+                heightAnchor.constraint(equalToConstant: 30),
+            ]
+        } else {
+            layout = [
+                stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+                stack.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -2),
+                iconView.widthAnchor.constraint(equalToConstant: 30),
+                iconView.heightAnchor.constraint(equalToConstant: 24),
+                widthAnchor.constraint(equalToConstant: Self.size.width),
+                heightAnchor.constraint(equalToConstant: Self.size.height),
+            ]
+        }
+        NSLayoutConstraint.activate(layout + [
             badgeLabel.leadingAnchor.constraint(equalTo: badgePill.leadingAnchor, constant: 4),
             badgeLabel.trailingAnchor.constraint(equalTo: badgePill.trailingAnchor, constant: -4),
             badgeLabel.topAnchor.constraint(equalTo: badgePill.topAnchor, constant: 1),
@@ -69,7 +86,7 @@ final class RailButton: NSControl {
         ])
 
         wantsLayer = true
-        layer?.cornerRadius = 9
+        layer?.cornerRadius = compact ? 8 : 9
         translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityRole(.button)
         configure(title: title, symbol: symbol, tooltip: tooltip, badge: badge)
@@ -79,7 +96,7 @@ final class RailButton: NSControl {
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     func configure(title: String, symbol: String, tooltip: String, badge: String?) {
-        let config = NSImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+        let config = NSImage.SymbolConfiguration(pointSize: compact ? 15 : 19, weight: .regular)
         iconView.image = (NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
                           ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil))?
             .withSymbolConfiguration(config)
@@ -134,6 +151,21 @@ final class RailButton: NSControl {
 }
 
 final class RailViewController: NSViewController {
+    /// Vertical is the rail down the left side; horizontal is the same buttons along the top of the window.
+    enum Orientation { case vertical, horizontal }
+
+    let orientation: Orientation
+
+    init(orientation: Orientation = .vertical) {
+        self.orientation = orientation
+        groupsButton = RailButton(title: "Groups", symbol: "square.grid.2x2", tooltip: "Tab Groups", badge: nil,
+                                  compact: orientation == .horizontal)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not supported") }
+
     var onSelect: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     /// A fixed entry, like Settings: not an app, nothing to configure, always there.
@@ -145,7 +177,7 @@ final class RailViewController: NSViewController {
     private var buttons: [RailButton] = []
     private var selectedID: String?
     private let stack = NSStackView()
-    private let groupsButton = RailButton(title: "Groups", symbol: "square.grid.2x2", tooltip: "Tab Groups", badge: nil)
+    private let groupsButton: RailButton
 
     /// Highlights Groups, while the list of groups or one group is shown (then no app is selected).
     func setGroupsSelected(_ selected: Bool) {
@@ -153,6 +185,7 @@ final class RailViewController: NSViewController {
     }
 
     override func loadView() {
+        if orientation == .horizontal { return loadHorizontalView() }
         let root = NSView()
 
         stack.orientation = .vertical
@@ -164,9 +197,7 @@ final class RailViewController: NSViewController {
         groups.target = self
         groups.action = #selector(groupsClicked)
 
-        let settings = RailButton(title: "Settings", symbol: "gearshape", tooltip: "Settings  \u{2318},", badge: nil)
-        settings.target = self
-        settings.action = #selector(settingsClicked)
+        let settings = makeSettingsButton()
 
         root.addSubview(stack)
         root.addSubview(groups)
@@ -182,6 +213,58 @@ final class RailViewController: NSViewController {
         view = root
     }
 
+    private func makeSettingsButton() -> RailButton {
+        let settings = RailButton(title: "Settings", symbol: "gearshape", tooltip: "Settings  \u{2318},", badge: nil,
+                                  compact: orientation == .horizontal)
+        settings.target = self
+        settings.action = #selector(settingsClicked)
+        return settings
+    }
+
+    /// The top bar: apps from the leading edge, Groups and Settings at the trailing one.
+    private func loadHorizontalView() {
+        let barHeight: CGFloat = 40
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: barHeight))
+        root.autoresizingMask = [.width]
+
+        stack.orientation = .horizontal
+        stack.spacing = 4
+        stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let groups = groupsButton
+        groups.target = self
+        groups.action = #selector(groupsClicked)
+        let trailing = NSStackView(views: [groups, makeSettingsButton()])
+        trailing.orientation = .horizontal
+        trailing.spacing = 4
+        trailing.alignment = .centerY
+        trailing.translatesAutoresizingMaskIntoConstraints = false
+        trailing.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+
+        root.addSubview(stack)
+        root.addSubview(trailing)
+        root.addSubview(separator)
+        // Many apps in a narrow window overflow rather than fight the trailing buttons, so this one gives way.
+        let gap = stack.trailingAnchor.constraint(lessThanOrEqualTo: trailing.leadingAnchor, constant: -12)
+        gap.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            stack.centerYAnchor.constraint(equalTo: root.centerYAnchor, constant: -0.5),
+            gap,
+            trailing.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            trailing.centerYAnchor.constraint(equalTo: root.centerYAnchor, constant: -0.5),
+            separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+        ])
+        view = root
+    }
+
     /// Shows `newItems`. When only names, icons or badges changed the existing buttons are updated in place.
     func setItems(_ newItems: [SidebarItem]) {
         if newItems.map(\.id) == items.map(\.id), buttons.count == newItems.count {
@@ -192,7 +275,8 @@ final class RailViewController: NSViewController {
                 button.removeFromSuperview()
             }
             buttons = newItems.enumerated().map { index, item in
-                let button = RailButton(title: item.name, symbol: item.symbol, tooltip: "", badge: item.badge)
+                let button = RailButton(title: item.name, symbol: item.symbol, tooltip: "", badge: item.badge,
+                                        compact: orientation == .horizontal)
                 button.target = self
                 button.action = #selector(appClicked(_:))
                 configure(button, item: item, index: index)
