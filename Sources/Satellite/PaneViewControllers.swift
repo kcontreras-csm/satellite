@@ -331,8 +331,14 @@ final class AssistantsViewController: NSViewController {
     private var items: [SidebarItem] = []
     private(set) var selectedID: String?
     private let segmented = NSSegmentedControl()
+    private let optionsButton = NSButton()
     private let container = NSView()
     private var isLoaded = false
+
+    /// Whether the panel is in a window of its own rather than the right side of the main window.
+    var isDetached: () -> Bool = { false }
+    /// Asks for the panel to be docked in the main window (false) or in a separate window (true).
+    var onSetDetached: ((Bool) -> Void)?
 
     /// The selected assistant when it is a web page; nil when it is a terminal.
     var selectedPane: WebPane? { selectedID.flatMap { panes[$0] } }
@@ -357,12 +363,25 @@ final class AssistantsViewController: NSViewController {
         segmented.translatesAutoresizingMaskIntoConstraints = false
         container.translatesAutoresizingMaskIntoConstraints = false
 
+        // A "..." menu beside the switcher, like the one in a browser's developer tools: Dock side.
+        optionsButton.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Assistant options")
+        optionsButton.bezelStyle = .texturedRounded
+        optionsButton.isBordered = false
+        optionsButton.toolTip = "Dock side"
+        optionsButton.target = self
+        optionsButton.action = #selector(showOptions(_:))
+        optionsButton.translatesAutoresizingMaskIntoConstraints = false
+
         root.addSubview(segmented)
+        root.addSubview(optionsButton)
         root.addSubview(container)
         NSLayoutConstraint.activate([
             segmented.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 8),
             segmented.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            segmented.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            segmented.trailingAnchor.constraint(equalTo: optionsButton.leadingAnchor, constant: -6),
+            optionsButton.centerYAnchor.constraint(equalTo: segmented.centerYAnchor),
+            optionsButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            optionsButton.widthAnchor.constraint(equalToConstant: 26),
             container.topAnchor.constraint(equalTo: segmented.bottomAnchor, constant: 8),
             container.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -466,6 +485,22 @@ final class AssistantsViewController: NSViewController {
         }
         segmented.selectedSegment = items.firstIndex { $0.id == selectedID } ?? -1
         segmented.isHidden = items.isEmpty
+    }
+
+    /// The "Dock side" menu: in the main window, on its right, or in a separate window; the current one is ticked.
+    @objc private func showOptions(_ sender: NSButton) {
+        let detached = isDetached()
+        let menu = NSMenu()
+        menu.addItem(.sectionHeader(title: "Dock side"))
+        let main = ClosureMenuItem(title: "Main Window") { [weak self] in self?.onSetDetached?(false) }
+        main.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: nil)
+        main.state = detached ? .off : .on
+        let separate = ClosureMenuItem(title: "Separate Window") { [weak self] in self?.onSetDetached?(true) }
+        separate.image = NSImage(systemSymbolName: "macwindow.on.rectangle", accessibilityDescription: nil)
+        separate.state = detached ? .on : .off
+        menu.addItem(main)
+        menu.addItem(separate)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
     @objc private func segmentChanged(_ sender: NSSegmentedControl) {

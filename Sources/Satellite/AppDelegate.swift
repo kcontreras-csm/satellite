@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closeTabOrWindow: { [weak self] in self?.closeTabOrWindow() },
             closeTitle: { [weak self] in self?.closeTitle ?? "Close" })))
         shortcuts.frontWebView = { [weak controller] in
-            guard let controller, controller.window?.isKeyWindow == true, let pane = controller.activePane, pane.didCreateView else { return nil }
+            guard let controller, controller.hasKeyWindow, let pane = controller.activePane, pane.didCreateView else { return nil }
             return pane.webView
         }
         syncSidebarShortcuts()
@@ -67,7 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) { MCPBridge.shared.stop() }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { mainController?.showWindow(nil) }
+        // The assistants can be open in a window of their own while the main window is closed.
+        if !flag || mainController?.window?.isVisible == false { mainController?.showWindow(nil) }
         return true
     }
 
