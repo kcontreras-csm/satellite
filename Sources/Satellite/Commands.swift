@@ -29,7 +29,7 @@ enum MenuLayout {
         "nav.back", "nav.forward", "nav.reload", "nav.hardReload", "nav.stop", "nav.home", nil,
         "@apps", nil,
         "nav.nextTab", "nav.previousTab", nil,
-        "assistants.toggle", "@assistants", "terminal.theme", nil,
+        "assistants.toggle", "assistants.dock", "@assistants", "terminal.theme", nil,
         "page.zoomIn", "page.zoomOut", "page.zoomReset", nil,
         "ai.copy", "ai.save", "ai.send", nil,
         "window.fullScreen",
@@ -73,6 +73,13 @@ enum BuiltInCommands {
         send.validate = { item in
             item.title = window.targetAssistant.map { "Send to \($0.name)" } ?? "Send to Assistant"
             return window.targetAssistant != nil
+        }
+
+        var dock = command("assistants.dock", "Dock Assistants in Separate Window", "Assistants",
+                           run { window.toggleAssistantsDocking(nil) })
+        dock.validate = { item in
+            item.title = window.isAssistantsDetached ? "Dock Assistants Back in Main Window" : "Dock Assistants in Separate Window"
+            return true
         }
 
         // Also on the terminal's right-click menu, which a program in the terminal can take over for its own clicks.
@@ -143,6 +150,7 @@ enum BuiltInCommands {
 
             // Assistants and AI
             command("assistants.toggle", "Toggle Assistants", "Assistants", key: "Cmd+Alt+0", run { window.toggleAssistants(nil) }),
+            dock,
             terminalTheme,
             command("ai.copy", "Copy Page for AI", "AI", key: "Cmd+Shift+C", run { window.copySnapshot(nil) }),
             command("ai.save", "Save Page for AI\u{2026}", "AI", key: "Cmd+Shift+S", run { window.saveSnapshot(nil) }),

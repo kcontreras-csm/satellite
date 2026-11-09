@@ -145,7 +145,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     private let railVC = RailViewController()
     private let contentVC = ContentViewController()
     private let assistantsVC = AssistantsViewController()
-    private let assistantsItem: NSSplitViewItem
+    private let splitVC: NSSplitViewController
+    private var assistantsItem: NSSplitViewItem
+    /// The floating window the assistants panel lives in while it is docked out of the main window.
+    private let assistantsWindow = AssistantsWindowController()
+    private static let detachedKey = "assistantsDetached"
+    private(set) var isAssistantsDetached = false
     private var observers: [NSObjectProtocol] = []
     private let addressBar = AddressBar()
     private var addressField: AddressBarField { addressBar.field }
@@ -163,10 +168,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         railItem.canCollapse = false
         let contentItem = NSSplitViewItem(viewController: contentVC)
         contentItem.minimumThickness = 480
-        assistantsItem = NSSplitViewItem(inspectorWithViewController: assistantsVC)
-        assistantsItem.minimumThickness = 340
-        assistantsItem.maximumThickness = 760
-        assistantsItem.canCollapse = true
+        assistantsItem = Self.makeAssistantsItem(assistantsVC)
+        splitVC = split
         split.addSplitViewItem(railItem)
         split.addSplitViewItem(contentItem)
         split.addSplitViewItem(assistantsItem)
@@ -258,6 +261,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
 
         applyItems()
 
+        assistantsVC.isDetached = { [weak self] in self?.isAssistantsDetached ?? false }
+        assistantsVC.onSetDetached = { [weak self] detached in
+            guard let self, detached != self.isAssistantsDetached else { return }
+            if detached { self.detachAssistants() } else { self.dockAssistantsBack() }
+        }
+        assistantsWindow.onCloseRequest = { [weak self] in self?.dockAssistantsBack() }
+        // Comes back detached when it was left that way. The window itself shows with the main one (showWindow).
+        if UserDefaults.standard.bool(forKey: Self.detachedKey) { detachAssistants(show: false) }
+
         SatelliteWebView.menuExtender = { [weak self] view, menu in
             guard let self else { return }
             AssistantContextMenu.extend(
@@ -339,14 +351,75 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     }
 
     func showAssistant(_ id: String) {
-        if assistantsItem.isCollapsed { assistantsItem.animator().isCollapsed = false }
+        if isAssistantsDetached {
+            assistantsWindow.present(activate: true)
+        } else if assistantsItem.isCollapsed {
+            assistantsItem.animator().isCollapsed = false
+        }
         assistantsVC.select(id)
     }
 
     // MARK: Actions
 
+    /// Shows or hides the assistants: the panel in the main window, or the floating window while it is docked out.
     @objc func toggleAssistants(_ sender: Any?) {
-        assistantsItem.animator().isCollapsed.toggle()
+        if isAssistantsDetached {
+            if assistantsWindow.isShown { assistantsWindow.hide() } else { assistantsWindow.present(activate: true) }
+        } else {
+            assistantsItem.animator().isCollapsed.toggle()
+        }
+    }
+
+    // MARK: Docking the assistants into their own window
+
+    private static func makeAssistantsItem(_ controller: NSViewController) -> NSSplitViewItem {
+        let item = NSSplitViewItem(inspectorWithViewController: controller)
+        item.minimumThickness = 340
+        item.maximumThickness = 760
+        item.canCollapse = true
+        return item
+    }
+
+    /// Moves the assistants panel out of the main window into a window of its own. The panel itself is moved, not
+    /// copied, so every assistant keeps its page, its sign-in and its running shell.
+    func detachAssistants(show: Bool = true) {
+        guard !isAssistantsDetached else { return }
+        isAssistantsDetached = true
+        UserDefaults.standard.set(true, forKey: Self.detachedKey)
+        splitVC.removeSplitViewItem(assistantsItem)
+        assistantsWindow.host(assistantsVC)
+        if show { assistantsWindow.present(activate: true) }
+        fitAddressBar()
+    }
+
+    /// Puts the panel back on the right of the main window and closes the floating one.
+    func dockAssistantsBack() {
+        guard isAssistantsDetached else { return }
+        isAssistantsDetached = false
+        UserDefaults.standard.set(false, forKey: Self.detachedKey)
+        assistantsWindow.hide()
+        assistantsWindow.release()
+        assistantsItem = Self.makeAssistantsItem(assistantsVC)
+        splitVC.addSplitViewItem(assistantsItem)
+        window?.makeKeyAndOrderFront(nil)
+        window?.layoutIfNeeded()
+        fitAddressBar()
+        if let id = assistantsVC.selectedID { assistantsVC.select(id) }
+    }
+
+    @objc func toggleAssistantsDocking(_ sender: Any?) {
+        if isAssistantsDetached { dockAssistantsBack() } else { detachAssistants() }
+    }
+
+    /// Whether the main window or the floating assistants window is the one taking keystrokes.
+    var hasKeyWindow: Bool {
+        window?.isKeyWindow == true || (isAssistantsDetached && assistantsWindow.window?.isKeyWindow == true)
+    }
+
+    /// The window the user is working in, for toasts and print sheets.
+    private var frontWindow: NSWindow? {
+        if isAssistantsDetached, assistantsWindow.window?.isKeyWindow == true { return assistantsWindow.window }
+        return window
     }
 
     @objc func goBack(_ sender: Any?) { activePane?.webView.goBack() }
@@ -390,35 +463,35 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
 
     func zoom(_ change: ZoomChange) {
         if let terminal = focusedTerminal {
-            Toast.show("Text size \(Int(terminal.zoom(change))) pt", in: window, duration: 1.2)
+            Toast.show("Text size \(Int(terminal.zoom(change))) pt", in: frontWindow, duration: 1.2)
             return
         }
         guard let pane = activePane, pane.didCreateView else { return }
         let level = pane.zoom(change)
-        Toast.show("Zoom \(Int((level * 100).rounded()))%", in: window, duration: 1.2)
+        Toast.show("Zoom \(Int((level * 100).rounded()))%", in: frontWindow, duration: 1.2)
     }
 
     func printPage() {
         guard let pane = activePane, pane.didCreateView, pane.webView.url != nil else {
-            Toast.show("Open a page first", in: window)
+            Toast.show("Open a page first", in: frontWindow)
             return
         }
-        pane.printPage(in: window)
+        pane.printPage(in: frontWindow)
     }
 
     /// Copies the link of the page in front: the current tab of the app, or the focused assistant.
     func copyPageAddress(withTitle: Bool = false) {
         guard let pane = activePane, let url = pane.currentURL, PageLink.isShareable(url) else {
-            Toast.show("Open a page first", in: window)
+            Toast.show("Open a page first", in: frontWindow)
             return
         }
         PageLink.copy(url, title: pane.tabTitle, includeTitle: withTitle)
-        Toast.show(withTitle ? "Copied \u{201C}\(pane.tabTitle)\u{201D} with its link" : "Copied link", in: window)
+        Toast.show(withTitle ? "Copied \u{201C}\(pane.tabTitle)\u{201D} with its link" : "Copied link", in: frontWindow)
     }
 
     func openInBrowser() {
         guard let url = activePane?.webView.url else {
-            Toast.show("Open a page first", in: window)
+            Toast.show("Open a page first", in: frontWindow)
             return
         }
         NSWorkspace.shared.open(url)
@@ -533,6 +606,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
     /// Navigation commands act on whichever side (apps or assistants) has focus. While a terminal in the assistants
     /// panel has it there is no page: Reload, Find, Back... typed in the terminal must not reach past it to the app.
     var activePane: WebPane? {
+        if isAssistantsDetached, assistantsWindow.window?.isKeyWindow == true { return assistantsVC.selectedPane }
         if let view = window?.firstResponder as? NSView, view.isDescendant(of: assistantsVC.view) {
             return assistantsVC.selectedPane
         }
@@ -572,7 +646,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
 
     /// The terminal in the assistants panel, while it has focus.
     var focusedTerminal: TerminalPane? {
-        guard let terminal = assistantsVC.selectedTerminal, let view = window?.firstResponder as? NSView,
+        guard let terminal = assistantsVC.selectedTerminal, let view = frontWindow?.firstResponder as? NSView,
               view.isDescendant(of: terminal.view) else { return nil }
         return terminal
     }
@@ -657,6 +731,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSToolb
         super.showWindow(sender)
         window?.layoutIfNeeded()
         fitAddressBar()
+        if isAssistantsDetached, !assistantsWindow.isShown { assistantsWindow.present(activate: false) }
     }
 
     private func fitAddressBar() {

@@ -3,7 +3,7 @@
 A native macOS app (Swift, AppKit, WKWebView) that keeps your work web apps in one window.
 
 - **Left rail:** OrgCS, BT1, Okta, Splunk and others (`Cmd+1..9` to switch).
-- **Right panel:** Claude, Gemini, Slackbot and a Terminal (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`).
+- **Right panel:** Claude, Gemini, Slackbot and a Terminal (`Cmd+Opt+1..9`, toggle with `Cmd+Opt+0`). The **⋯** button beside the switcher picks the dock side, as in a browser's developer tools: **Main Window** (on the right) or **Separate Window**, which you can place on another screen. The same choice is in View > Dock Assistants.
 - **Settings** (`Cmd+,`): extensions, the extension store, keyboard shortcuts, software updates, remembered client certificates, Slack sign-in, website data (clear one site, only the cache so you stay signed in, or everything).
 - **Extensions:** JavaScript that runs on the pages you choose, installable from a store.
 
