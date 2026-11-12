@@ -18,6 +18,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Satellite"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp THIRD_PARTY_NOTICES.md "$APP/Contents/Resources/"   # SwiftTerm's MIT license must ship with the app
+
+# Device management: with MANAGEMENT_PROFILE set to an enrollment profile (satellite-admin profile --out ...),
+# bake it in so every copy of this build enrolls with that admin on first launch. See tools/satellite-admin.
+if [[ -n "${MANAGEMENT_PROFILE:-}" ]]; then
+    [[ -f "$MANAGEMENT_PROFILE" ]] || { echo "MANAGEMENT_PROFILE is set but $MANAGEMENT_PROFILE doesn't exist." >&2; exit 1; }
+    head -1 "$MANAGEMENT_PROFILE" | grep -q '^satadm1\.' || { echo "$MANAGEMENT_PROFILE isn't a Satellite enrollment profile." >&2; exit 1; }
+    cp "$MANAGEMENT_PROFILE" "$APP/Contents/Resources/management.profile"
+    echo "Baked in the management profile; this build enrolls automatically."
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Version: VERSION env (CI) > newest tag > 0.1.0. Always plain major.minor.patch, which is what the updater compares.

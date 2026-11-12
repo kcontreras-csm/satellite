@@ -4,3 +4,8 @@ dist/
 build/
 *.xcodeproj
 release/
+
+# Device management (tools/satellite-admin): never commit the admin's private state, and keep enrollment
+# profiles out of the repo (their shared secret lets anyone enroll). See tools/satellite-admin/README.md.
+*.profile
+state.json

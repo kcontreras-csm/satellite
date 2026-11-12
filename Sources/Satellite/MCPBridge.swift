@@ -13,6 +13,25 @@ import Darwin
 /// the same way that confirmation does, reusing the same trust store. There is no further gate per click or
 /// keystroke once an agent is trusted to write: that single confirmation is the control, so its wording says
 /// plainly what it grants.
+/// What an agent may do through the MCP server. A managed device's admin can lock this (`PolicyEnforcer`);
+/// otherwise it is `.full`.
+enum MCPMode: String, CaseIterable { case full, read, off }
+
+enum MCPDefaults {
+    /// The MCP mode. Only set by management policy today; absent means `.full`.
+    static let mode = "mcpMode"
+    /// Management bookkeeping, read by the UI to show what an admin has locked.
+    static let blockedExtensions = "managedBlockedExtensions"
+    static let lockedSettings = "managedLockedSettings"
+
+    static var currentMode: MCPMode {
+        (UserDefaults.standard.string(forKey: mode)).flatMap(MCPMode.init) ?? .full
+    }
+    /// The setting keys an admin has locked (so the UI can disable them).
+    static var lockedSettingKeys: [String] { UserDefaults.standard.stringArray(forKey: lockedSettings) ?? [] }
+    static var blockedExtensionIDs: [String] { UserDefaults.standard.stringArray(forKey: blockedExtensions) ?? [] }
+}
+
 @MainActor
 final class MCPBridge {
     static let shared = MCPBridge()
@@ -69,6 +88,11 @@ final class MCPBridge {
         let paneID = request["paneId"] as? String ?? ""
         let label = AppsModel.shared.config.assistants.first(where: { $0.id == paneID })?.name ?? "A command-line agent"
         let kind: Kind = ["click", "type"].contains(action) ? .write : .read
+        switch MCPDefaults.currentMode {
+        case .off: return ["ok": false, "error": "Satellite\u{2019}s MCP server is turned off by your administrator."]
+        case .read where kind == .write: return ["ok": false, "error": "Writing to pages is turned off by your administrator; reading is still allowed."]
+        default: break
+        }
         let trustID = "\(kind.trustPrefix):\(paneID)"
         if !trust.isTrusted(trustID) {
             let answer = await confirm(kind, label, controller.window)

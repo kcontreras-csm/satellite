@@ -32,7 +32,7 @@ final class SettingsWindowController: NSWindowController {
 }
 
 struct SettingsView: View {
-    enum Tab { case extensions, store, apps, shortcuts, general }
+    enum Tab { case extensions, store, apps, shortcuts, general, management }
 
     @ObservedObject var manager: ExtensionManager
     @ObservedObject var store: StoreModel
@@ -67,6 +67,9 @@ struct SettingsView: View {
             GeneralSettings(reloadPages: reloadPages)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(Tab.general)
+            ManagementSettings()
+                .tabItem { Label("Management", systemImage: "lock.shield") }
+                .tag(Tab.management)
         }
         .padding(16)
         .frame(width: 800, height: 600)
@@ -689,6 +692,9 @@ private struct GeneralSettings: View {
         return "Satellite \(AppInfo.version)" + (build.map { " (\($0))" } ?? "")
     }
 
+    /// True when an administrator has locked this setting (see Settings > Management).
+    private func locked(_ key: String) -> Bool { MCPDefaults.lockedSettingKeys.contains(key) }
+
     var body: some View {
         Form {
             Picker("Appearance", selection: $appearance) {
@@ -713,6 +719,7 @@ private struct GeneralSettings: View {
                 Button("Check for Updates\u{2026}") { UpdateChecker.shared.check(silent: false) }
             }
             Toggle("Check for updates automatically", isOn: $autoCheck)
+                .disabled(locked("auto-update"))
 
             Divider()
 
@@ -750,6 +757,7 @@ private struct GeneralSettings: View {
                 Text("All text").tag(SnapshotTextMode.full.rawValue)
                 Text("No text, structure only").tag(SnapshotTextMode.none.rawValue)
             }
+            .disabled(locked("snapshot-text"))
             Toggle("Include the extension-writing guide", isOn: $snapshotGuide)
             Text("View > Copy Page for AI puts the current page (its HTML including shadow DOM and frames, clickable elements and selectors) on the clipboard. Pages often hold customer data, so by default only interface labels are kept and tokens in links are hidden. Check the result before sharing it.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -759,6 +767,7 @@ private struct GeneralSettings: View {
                 Text("Interface labels only").tag(SnapshotTextMode.labels.rawValue)
                 Text("No text, structure only").tag(SnapshotTextMode.none.rawValue)
             }
+            .disabled(locked("agent-text"))
             Text("What an agent you\u{2019}ve allowed to read pages gets through Satellite\u{2019}s MCP server (Satellite > Install MCP Server), such as Claude Code in a terminal. All text by default, so it can search what pages say; tokens in links are still hidden. Copy Page for AI and Send to Assistant use the setting above.")
                 .font(.footnote).foregroundStyle(.secondary)
 

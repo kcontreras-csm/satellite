@@ -27,6 +27,9 @@ enum ExtensionInstaller {
         let fm = FileManager.default
         let id = entry.id
         guard ExtensionManifest.isValidID(id) else { throw StoreError.invalid("Invalid extension id.") }
+        guard !MCPDefaults.blockedExtensionIDs.contains(id) else {
+            throw StoreError.invalid("\u{201C}\(id)\u{201D} is blocked by your administrator and can\u{2019}t be installed.")
+        }
 
         let root = AppPaths.extensions
         let staging = root.appendingPathComponent(".installing-\(id)-\(UUID().uuidString)", isDirectory: true)

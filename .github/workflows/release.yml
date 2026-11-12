@@ -50,9 +50,28 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # Device management: with the MANAGEMENT_PROFILE secret set, bake the enrollment profile into the build so
+      # every copy enrolls with the admin (see tools/satellite-admin). The secret is only the profile — public
+      # admin keys plus the shared enrollment secret — NOT the admin's private key, which never leaves the admin's
+      # own machine (~/.satellite-admin/state.json). So CI can ship a managed build, but can't command any device.
+      - name: Management profile
+        id: mgmt
+        env:
+          MANAGEMENT_PROFILE: ${{ secrets.MANAGEMENT_PROFILE }}
+        run: |
+          if [[ -n "$MANAGEMENT_PROFILE" ]]; then
+            echo "$MANAGEMENT_PROFILE" | base64 --decode > "$RUNNER_TEMP/management.profile"
+            head -1 "$RUNNER_TEMP/management.profile" | grep -q '^satadm1\.' || { echo "MANAGEMENT_PROFILE isn't a Satellite enrollment profile."; exit 1; }
+            echo "profile=$RUNNER_TEMP/management.profile" >> "$GITHUB_OUTPUT"
+            echo "This build will be managed."
+          else
+            echo "No MANAGEMENT_PROFILE secret; building an unmanaged Satellite."
+          fi
+
       - name: Build app
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          MANAGEMENT_PROFILE: ${{ steps.mgmt.outputs.profile }}
         run: scripts/bundle.sh release
 
       - name: Package zip + appcast

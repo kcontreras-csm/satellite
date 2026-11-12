@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
         MCPBridge.shared.mainController = controller
         MCPBridge.shared.start()
+        ManagementClient.shared.start()   // enrolls automatically if this build carries an admin profile
 
         shortcuts.setAppCommands(BuiltInCommands.make(window: controller, app: AppActions(
             openSettings: { [weak self] in self?.openSettings() },

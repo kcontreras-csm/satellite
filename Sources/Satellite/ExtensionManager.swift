@@ -162,9 +162,16 @@ final class ExtensionManager: ObservableObject {
                 .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
                 .filter { fm.fileExists(atPath: $0.appendingPathComponent("manifest.json").path) || root == directory }
                 .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            let blocked = Set(MCPDefaults.blockedExtensionIDs)
             for folder in found {
                 var info = Self.scan(folder, enabled: Self.storedEnabled(folder.lastPathComponent))
                 info.inDevelopmentFolder = root != directory
+                if blocked.contains(info.id) {
+                    // Blocked by management policy: don't load it, and remove Satellite's own copy if it has one.
+                    if root == directory { try? FileManager.default.trashItem(at: folder, resultingItemURL: nil) }
+                    else { notices.append("\u{201C}\(info.id)\u{201D} is blocked by your administrator and was not loaded.") }
+                    continue
+                }
                 if let first = seen[info.id] {
                     notices.append("\u{201C}\(info.id)\u{201D} exists in two folders. Using \(first.deletingLastPathComponent().path); ignoring \(folder.deletingLastPathComponent().path).")
                     continue
