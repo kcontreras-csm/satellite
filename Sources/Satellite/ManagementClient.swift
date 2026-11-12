@@ -81,7 +81,7 @@ final class ManagementClient: ObservableObject {
         let policy = try await welcome.wait()
         await connection.stop()
 
-        var newState = ManagementState(
+        let newState = ManagementState(
             keys: keys.stored,
             admin: .init(sign: token.a, kx: token.k, name: token.n, host: token.h, enrolledAt: Date()),
             policy: policy, deviceName: Self.defaultDeviceName, enrollSecret: token.s, confirmed: true)
@@ -130,14 +130,35 @@ final class ManagementClient: ObservableObject {
         let message: String?
         if state.confirmed {
             message = try? Management.seal(keys, toSign: state.admin.sign, toKx: state.admin.kx,
-                                           Hello(type: kind, version: AppInfo.version.description, policyVersion: state.policy.version, extensions: PolicyEnforcer.inventory()))
+                                           Hello(type: kind, version: AppInfo.version.description, policyVersion: state.policy.version,
+                                                 os: Self.osDescription, model: Self.model, build: Self.build, extensions: PolicyEnforcer.inventory()))
         } else {
             message = Self.sealedEnroll(secret: state.enrollSecret, keys: keys, adminSign: state.admin.sign, adminKx: state.admin.kx, deviceName: state.deviceName)
         }
         if let message { await connection.send(message, on: Management.adminInbox(state.admin.sign)) }
     }
 
-    private struct Hello: Encodable { var type: String; var id = Management.newID(); var ts = Management.now(); var version: String; var policyVersion: Int; var extensions: [PolicyEnforcer.ExtensionReport] }
+    private struct Hello: Encodable {
+        var type: String; var id = Management.newID(); var ts = Management.now()
+        var version: String; var policyVersion: Int
+        var os: String; var model: String; var build: String?
+        var extensions: [PolicyEnforcer.ExtensionReport]
+    }
+
+    /// Facts about this Mac shown to the admin, read once. "macOS 15.1", the hardware model, and the build stamp.
+    static let osDescription: String = {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "macOS \(v.majorVersion).\(v.minorVersion)" + (v.patchVersion > 0 ? ".\(v.patchVersion)" : "")
+    }()
+    static let model: String = {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "Mac" }
+        var bytes = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &bytes, &size, nil, 0)
+        return String(cString: bytes)
+    }()
+    static var build: String? { Bundle.main.object(forInfoDictionaryKey: "SatelliteBuild") as? String }
 
     /// Builds and seals an enrollment announcement, carrying the proof that this device holds a valid secret.
     private static func sealedEnroll(secret: String, keys: Management.Keys, adminSign: String, adminKx: String, deviceName: String) -> String? {

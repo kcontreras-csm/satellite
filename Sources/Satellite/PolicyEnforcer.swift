@@ -46,14 +46,11 @@ enum PolicyEnforcer {
             UserDefaults.standard.set(mappedValue(key, value), forKey: defaultsKey)
         }
         UserDefaults.standard.set(Array(policy.lockedSettings.keys), forKey: MCPDefaults.lockedSettings)
+        // The MCP mode may have changed; start or stop the server to match (off = blocked entirely).
+        if !policy.lockedSettings.keys.contains("mcp") { UserDefaults.standard.removeObject(forKey: MCPDefaults.mode) }
+        MCPBridge.shared.applyMode()
 
         installPinned(policy.pinned)
-    }
-
-    /// Lifts the settings locks (on unenrolling). Blocked/pinned extensions are left as the user last had them.
-    static func unlockAll() {
-        UserDefaults.standard.removeObject(forKey: MCPDefaults.lockedSettings)
-        UserDefaults.standard.removeObject(forKey: MCPDefaults.blockedExtensions)
     }
 
     static func run(_ command: String, on id: String) {

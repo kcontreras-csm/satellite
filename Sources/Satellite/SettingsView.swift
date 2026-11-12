@@ -10,7 +10,7 @@ final class SettingsWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 600),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = "Settings"
@@ -32,7 +32,7 @@ final class SettingsWindowController: NSWindowController {
 }
 
 struct SettingsView: View {
-    enum Tab { case extensions, store, apps, shortcuts, general, management }
+    enum Tab { case extensions, store, skills, apps, shortcuts, general, management }
 
     @ObservedObject var manager: ExtensionManager
     @ObservedObject var store: StoreModel
@@ -58,6 +58,9 @@ struct SettingsView: View {
             StoreView(store: store, manager: manager, detail: $detail, installFromGitHub: { githubInstall = GitHubInstallRequest() })
                 .tabItem { Label("Store", systemImage: "square.grid.2x2") }
                 .tag(Tab.store)
+            SkillsView()
+                .tabItem { Label("Skills", systemImage: "wand.and.stars") }
+                .tag(Tab.skills)
             AppsSettings()
                 .tabItem { Label("Apps", systemImage: "sidebar.left") }
                 .tag(Tab.apps)
@@ -72,7 +75,7 @@ struct SettingsView: View {
                 .tag(Tab.management)
         }
         .padding(16)
-        .frame(width: 800, height: 600)
+        .frame(width: 960, height: 600)
         .sheet(item: $detail) { entry in
             StoreDetailSheet(entry: entry, store: store, manager: manager)
         }

@@ -43,6 +43,14 @@ if (message.type !== "policy" || message.policy.version !== 5 || message.policy.
 console.log("  ok  JavaScript opened the Swift-sealed policy (v" + message.policy.version + ")");
 '
 
+echo "== native relay client (Swift) over the real relay =="
+RELAY="$(SATELLITE_HOME="$WORK/home" "$WORK/checks" --relay-selftest || true)"
+case "$RELAY" in
+  RELAY-OK) echo "  ok  SatellaConnection connected, subscribed, sent and received" ;;
+  RELAY-TIMEOUT) echo "  skip  no relay reachable (offline); native client not exercised" ;;
+  *) echo "  FAIL  native relay client: $RELAY"; exit 1 ;;
+esac
+
 echo "== web dashboard (admin tool) =="
 (
   cd tools/satellite-admin

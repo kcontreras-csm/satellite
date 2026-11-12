@@ -338,6 +338,7 @@ final class ExtensionManager: ObservableObject {
         let active = Set(extensions.filter(\.isActive).map(\.id))
         UIRegistry.shared.prune(keeping: active)
         ShortcutRegistry.shared.prune(keeping: active)
+        MainActor.assumeIsolated { RelayManager.shared.prune(keeping: active) }
     }
 
     // MARK: Script generation
@@ -425,7 +426,7 @@ final class ExtensionManager: ObservableObject {
           window.addEventListener('error', (event) => {
             if (String(event.filename).indexOf('\(id).js') >= 0) __send('error', (event.error && event.error.stack) || event.message);
           });
-          const __listeners = { settings: [], shortcut: [] };
+          const __listeners = { settings: [], shortcut: [], relay: [] };
           const __shortcutHandlers = Object.create(null);
           __listeners.shortcut.push(id => { const handler = __shortcutHandlers[id]; if (handler) handler(); });
           window.__satelliteEmit = (type, args) => {
@@ -464,6 +465,12 @@ final class ExtensionManager: ObservableObject {
               openExternal: url => post('openExternal', { url: String(url) }),
               salesforce: Object.freeze({
                 query: soql => post('salesforce.query', { soql: String(soql) }).then(text => JSON.parse(text)),
+              }),
+              relay: Object.freeze({
+                identity: () => post('relay.identity'),
+                subscribe: channel => post('relay.subscribe', { channel: String(channel) }),
+                send: (channel, text) => post('relay.send', { channel: String(channel), text: String(text) }),
+                onMessage: callback => { if (typeof callback === 'function') __listeners.relay.push(callback); },
               }),
               ui: Object.freeze({ apps: list('apps'), assistants: list('assistants') }),
               shortcuts: Object.freeze({
@@ -583,6 +590,28 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
             let host = origin.host
             Task { @MainActor in
                 do { replyHandler(try await SalesforceAPI.query(soql, pageHost: host), nil) }
+                catch { replyHandler(nil, error.localizedDescription) }
+            }
+
+        case "relay.identity":
+            guard allowed(.relay) else { return }
+            Task { @MainActor in replyHandler(RelayManager.shared.identityHex(for: extensionID), nil) }
+
+        case "relay.subscribe":
+            guard allowed(.relay) else { return }
+            guard let channel = params["channel"] as? String else { return replyHandler(nil, "Missing channel") }
+            Task { @MainActor in
+                do { try await RelayManager.shared.subscribe(extensionID, channel: channel); replyHandler(nil, nil) }
+                catch { replyHandler(nil, error.localizedDescription) }
+            }
+
+        case "relay.send":
+            guard allowed(.relay) else { return }
+            guard let channel = params["channel"] as? String, let text = params["text"] as? String else {
+                return replyHandler(nil, "Missing channel or text")
+            }
+            Task { @MainActor in
+                do { try await RelayManager.shared.send(extensionID, channel: channel, text: text); replyHandler(nil, nil) }
                 catch { replyHandler(nil, error.localizedDescription) }
             }
 

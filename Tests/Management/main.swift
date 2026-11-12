@@ -12,6 +12,39 @@ func check(_ ok: Bool, _ name: String) {
     if !ok { failures += 1 }
 }
 
+// MARK: Live relay self-test (SatellaConnection against the real relay)
+
+// Exercises the native Swift client the relay API and management use: connect, dynamic subscribe, send, and
+// receive. The relay echoes a sender's own message, so one connection can check the whole round trip. Prints
+// RELAY-OK or RELAY-TIMEOUT; the test script treats a timeout (no network) as a skip, not a failure.
+if CommandLine.arguments.contains("--relay-selftest") {
+    final class Holder { var receiver: SatellaConnection?; var sender: SatellaConnection?; var ok = false }
+    let holder = Holder()
+    let sem = DispatchSemaphore(value: 0)
+    let channel = "satadm.selftest.\(UInt32.random(in: 0..<1_000_000))"
+    let marker = "ping-\(UInt32.random(in: 0..<1_000_000))"
+    Task {
+        let receiver = SatellaConnection(host: SatellaConnection.defaultHost, identity: .create(), channels: [channel],
+                                         onRelay: { if $0.text == marker { holder.ok = true; sem.signal() } })
+        let sender = SatellaConnection(host: SatellaConnection.defaultHost, identity: .create(), channels: [],
+                                       onRelay: { _ in })
+        holder.receiver = receiver; holder.sender = sender
+        do {
+            try await receiver.start()                 // subscribed to the channel via its initial list
+            try await sender.start()
+            try await Task.sleep(nanoseconds: 500_000_000)
+            await sender.send(marker, on: channel)     // a second connection broadcasts; the receiver should hear it
+        } catch {
+            print("RELAY-ERROR \(error.localizedDescription)")
+            sem.signal()
+        }
+    }
+    let result = sem.wait(timeout: .now() + 15)
+    Task { await holder.receiver?.stop(); await holder.sender?.stop() }
+    print(holder.ok ? "RELAY-OK" : (result == .timedOut ? "RELAY-TIMEOUT" : "RELAY-FAIL"))
+    exit(holder.ok ? 0 : (result == .timedOut ? 0 : 1))
+}
+
 // MARK: Cross-language vector mode
 
 if CommandLine.arguments.contains("--emit-vector") {
@@ -90,6 +123,27 @@ struct Stale: Codable { var type = "policy"; var id = Management.newID(); var ts
 let staleSealed = try! Management.seal(admin, toSign: device.signHex, toKx: device.kxB64, Stale(ts: Management.now() - (Management.maxSkew + 60) * 1000))
 if let env = Management.peek(staleSealed, keys: device) {
     check((try? Management.open(Management.Message.self, device, env, senderKx: admin.kxB64)) == nil, "open rejects a stale message")
+}
+
+// MARK: MCP mode enforcement
+
+// An administrator setting mcp=off must take the local MCP server down (not just refuse): applyMode() removes the
+// socket; full/read bring it back. The socket lives under SATELLITE_HOME, so its presence is the signal.
+MainActor.assumeIsolated {
+    let socket = MCPSocket.path
+    UserDefaults.standard.set(MCPMode.full.rawValue, forKey: MCPDefaults.mode)
+    MCPBridge.shared.applyMode()
+    check(FileManager.default.fileExists(atPath: socket), "MCP server runs when mode is full")
+
+    UserDefaults.standard.set(MCPMode.off.rawValue, forKey: MCPDefaults.mode)
+    MCPBridge.shared.applyMode()
+    check(!FileManager.default.fileExists(atPath: socket), "MCP server is taken down when an admin sets mcp=off")
+
+    UserDefaults.standard.set(MCPMode.read.rawValue, forKey: MCPDefaults.mode)
+    MCPBridge.shared.applyMode()
+    check(FileManager.default.fileExists(atPath: socket), "MCP server comes back for read-only")
+    MCPBridge.shared.stop()
+    UserDefaults.standard.removeObject(forKey: MCPDefaults.mode)
 }
 
 print(failures == 0 ? "\nall passed" : "\n\(failures) FAILED")

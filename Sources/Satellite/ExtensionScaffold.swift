@@ -326,6 +326,20 @@ enum ExtensionScaffold {
       salesforce: {
         query<T = Record<string, any>>(soql: string): Promise<{ totalSize: number; done: boolean; nextRecordsUrl?: string; records: T[] }>;
       };
+      /**
+       * Needs the "relay" permission. Send and receive messages on Satellite's shared relay (Satella) — a live
+       * pub/sub channel other Satellites can also listen on. Satellite keeps the connection natively, so there's
+       * no socket in the page (the page's CSP can't block it) and no key to manage: this extension has its own
+       * stable sender identity. `identity()` returns that sender key (hex), so you can tell your own messages
+       * apart; `onMessage` fires for every message on a channel you've subscribed to. Channels are 1–128 chars of
+       * letters, digits, ".", "_" or "-"; messages are up to 100 KB of text. The relay is a third-party service.
+       */
+      relay: {
+        identity(): Promise<string>;
+        subscribe(channel: string): Promise<void>;
+        send(channel: string, text: string): Promise<void>;
+        onMessage(callback: (message: { channel: string; sender: string; text: string }) => void): void;
+      };
       ui: { apps: SatelliteSidebarList; assistants: SatelliteSidebarList };
       /**
        * Needs the "shortcuts" permission. Commands are listed in the Extensions menu and in Settings > Shortcuts,
@@ -385,8 +399,8 @@ enum ExtensionScaffold {
         "min_app_version": { "type": "string" },
         "permissions": {
           "type": "array", "uniqueItems": true,
-          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts", "case-assistant", "salesforce"] },
-          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts), salesforce (read-only SOQL as the signed-in user)."
+          "items": { "enum": ["storage", "notifications", "open-external", "ui", "shortcuts", "case-assistant", "salesforce", "relay"] },
+          "description": "What the satellite API may do. storage, notifications, open-external, ui (change the sidebar), shortcuts (add keyboard shortcuts), salesforce (read-only SOQL as the signed-in user), relay (send/receive on Satellite's shared relay)."
         },
         "matches": { "type": "array", "items": { "type": "string" }, "description": "Chrome match patterns, e.g. *://*.example.com/*" },
         "exclude_matches": { "type": "array", "items": { "type": "string" } },

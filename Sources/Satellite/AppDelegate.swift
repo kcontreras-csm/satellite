@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppAppearance.apply()   // before any window, so nothing opens in the wrong appearance
+        _ = AppPaths.aiWorkspace   // create ~/AI so the Claude terminal starts there (one-time trust), not in home
         UIRegistry.shared.configure(AppsModel.shared.config)
         ExtensionManager.shared.reload()
 
@@ -32,7 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsWindowController.shared.onReloadPages = { [weak controller] in controller?.reloadAllPages() }
         SettingsWindowController.shared.currentPageURL = { [weak controller] in controller?.currentPageURL }
         MCPBridge.shared.mainController = controller
-        MCPBridge.shared.start()
+        MCPBridge.shared.applyMode()   // starts the MCP server unless an administrator has set mcp=off
         ManagementClient.shared.start()   // enrolls automatically if this build carries an admin profile
 
         shortcuts.setAppCommands(BuiltInCommands.make(window: controller, app: AppActions(

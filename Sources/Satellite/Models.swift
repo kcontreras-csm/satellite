@@ -13,6 +13,15 @@ enum AppPaths {
         return dir
     }()
 
+    /// A dedicated folder the bundled Claude terminal starts in, so Claude Code only asks to trust it once rather
+    /// than wherever the shell happened to open. `~/AI`, created on demand. Not under SATELLITE_HOME: it's a real
+    /// place the user can drop files for the agent to work on.
+    static var aiWorkspace: URL {
+        let dir = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("AI", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     static var extensions: URL { subdirectory("Extensions") }
     static var extensionData: URL { subdirectory("ExtensionData") }
     static var storeCache: URL { subdirectory("StoreCache") }
@@ -105,6 +114,8 @@ struct StoreConfig: Codable, Hashable {
     var directory: String?
 
     static let `default` = StoreConfig()
+    /// The default repository for the Claude Code skills store.
+    static let skillsDefault = StoreConfig(repository: "kcontreras-csm/claude-skills")
 }
 
 /// A tab group's color, from a fixed palette (so it's easy to pick from a menu and survives in config.json).
@@ -158,10 +169,13 @@ struct AppConfig: Codable {
     var apps: [WebApp]
     var assistants: [WebApp]
     var store: StoreConfig?
+    /// The GitHub repository the Claude Code skills store reads (`skills.json`). nil uses the default.
+    var skillsStore: StoreConfig?
     /// Tab groups; nil (left out of config.json) when there are none.
     var groups: [SavedGroup]?
 
     var effectiveStore: StoreConfig { store ?? .default }
+    var effectiveSkillsStore: StoreConfig { skillsStore ?? .skillsDefault }
 
     static let defaults = AppConfig(
         apps: [
@@ -171,7 +185,10 @@ struct AppConfig: Codable {
             WebApp(id: "splunk", name: "Splunk", url: URL(string: "https://splunk-web.log-analytics.monitoring.aws-esvc1-useast2.aws.sfdc.cl/en-US/app/launcher/home")!, symbol: "text.magnifyingglass"),
         ],
         assistants: [
-            WebApp(id: "claude", name: "Claude", url: URL(string: "https://claude.ai/")!, symbol: "sparkle"),
+            // Claude Code in a terminal rather than claude.ai: it runs `claude` in a dedicated ~/AI folder, so
+            // Claude Code only asks to trust that one folder once. Two characters of padding around the text.
+            WebApp.makeTerminal(id: "claude", name: "Claude", symbol: "sparkle",
+                                config: TerminalConfig(command: "claude", directory: "~/AI", padding: 2)),
             WebApp(id: "gemini", name: "Gemini", url: URL(string: "https://gemini.google.com/")!, symbol: "sparkles"),
             WebApp(id: "slack", name: "Slackbot", url: URL(string: "https://app.slack.com/client")!, symbol: "number"),
             WebApp.makeTerminal(id: "terminal", name: "Terminal"),

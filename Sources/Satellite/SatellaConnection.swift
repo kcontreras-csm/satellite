@@ -19,8 +19,10 @@ actor SatellaConnection {
 
     private let host: String
     private let identity: Management.Keys
-    private let channels: [String]
+    private var channels: [String]
     private let onRelay: (Relay) -> Void
+    /// Called when a live connection drops (not when `stop()` is used). Lets an owner reconnect and re-subscribe.
+    private let onClose: () -> Void
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -28,13 +30,25 @@ actor SatellaConnection {
     private var requestChain: Task<Void, Never> = Task {}
     private var running = false
 
+    var isRunning: Bool { running }
+
     private struct Reply { let type: UInt8; let status: Int16; let body: String }
 
-    init(host: String, identity: Management.Keys, channels: [String], onRelay: @escaping (Relay) -> Void) {
+    init(host: String, identity: Management.Keys, channels: [String],
+         onRelay: @escaping (Relay) -> Void, onClose: @escaping () -> Void = {}) {
         self.host = host
         self.identity = identity
         self.channels = channels
         self.onRelay = onRelay
+        self.onClose = onClose
+    }
+
+    /// Listens on one more channel now (and again after any reconnect). No-op if already subscribed.
+    func subscribe(_ channel: String) async throws {
+        if !channels.contains(channel) { channels.append(channel) }
+        guard running, task != nil else { return }   // the next handshake will subscribe it
+        let reply = try await request(.json, "/v1/relay/\(wireID(channel))/subscribe")
+        guard reply?.status == 200 else { throw Management.ProtocolError("Couldn\u{2019}t subscribe to \(channel).") }
     }
 
     private func wireID(_ channel: String) -> String { "\(channel)@\(Self.version)" }
@@ -131,9 +145,12 @@ actor SatellaConnection {
         requestChain = task
         await task.value
         guard let socket = self.task, running else { throw Management.ProtocolError("Not connected.") }
-        try await socket.send(.data(Self.frame(type, route: route, body: body)))
+        // Register `pending` BEFORE sending: the relay can reply faster than the send call returns, and a reply
+        // that arrives with no pending continuation would be dropped and the request would hang until timeout.
         return await withCheckedContinuation { (continuation: CheckedContinuation<Reply?, Never>) in
             self.pending = continuation
+            let frame = Self.frame(type, route: route, body: body)
+            Task { try? await socket.send(.data(frame)) }
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.replyTimeout * 1_000_000_000))
                 await self?.timeout(route)
@@ -177,6 +194,10 @@ actor SatellaConnection {
     private func deliverNil() {
         pending?.resume(returning: nil)
         pending = nil
+        if running {   // the socket dropped on its own (not stop()); let the owner reconnect
+            running = false
+            onClose()
+        }
     }
 
     private func received(_ data: Data) {

@@ -42,6 +42,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
     case ui
     case shortcuts
     case salesforce
+    case relay
 
     var summary: String {
         switch self {
@@ -52,6 +53,7 @@ enum ExtensionPermission: String, Codable, CaseIterable, Hashable {
         case .ui: return "Add or change items in the sidebar and the assistants panel"
         case .shortcuts: return "Add keyboard shortcuts and menu commands"
         case .salesforce: return "Read Salesforce records you can see, signed in as you (your session stays in Satellite)"
+        case .relay: return "Send and receive messages on Satellite\u{2019}s shared relay (a third-party online service)"
         }
     }
 }

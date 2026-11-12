@@ -66,6 +66,17 @@ final class MCPBridge {
         unlink(MCPSocket.path)
     }
 
+    /// Starts or stops the server to match the current MCP mode. When an administrator sets `mcp` to `off`, the
+    /// socket is taken down entirely, so an agent can't even connect — not just refused. Called at launch and
+    /// whenever management policy is applied.
+    func applyMode() {
+        if MCPDefaults.currentMode == .off {
+            stop()
+        } else if listenFD < 0 {
+            start()
+        }
+    }
+
     private nonisolated func acceptLoop(_ fd: Int32) {
         while true {
             let client = accept(fd, nil, nil)
