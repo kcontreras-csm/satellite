@@ -337,6 +337,7 @@ enum ExtensionScaffold {
       relay: {
         identity(): Promise<string>;
         subscribe(channel: string): Promise<void>;
+        unsubscribe(channel: string): Promise<void>;
         send(channel: string, text: string): Promise<void>;
         onMessage(callback: (message: { channel: string; sender: string; text: string }) => void): void;
       };

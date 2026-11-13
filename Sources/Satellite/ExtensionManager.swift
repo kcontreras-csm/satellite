@@ -469,6 +469,7 @@ final class ExtensionManager: ObservableObject {
               relay: Object.freeze({
                 identity: () => post('relay.identity'),
                 subscribe: channel => post('relay.subscribe', { channel: String(channel) }),
+                unsubscribe: channel => post('relay.unsubscribe', { channel: String(channel) }),
                 send: (channel, text) => post('relay.send', { channel: String(channel), text: String(text) }),
                 onMessage: callback => { if (typeof callback === 'function') __listeners.relay.push(callback); },
               }),
@@ -604,6 +605,11 @@ final class ExtensionBridge: NSObject, WKScriptMessageHandlerWithReply {
                 do { try await RelayManager.shared.subscribe(extensionID, channel: channel); replyHandler(nil, nil) }
                 catch { replyHandler(nil, error.localizedDescription) }
             }
+
+        case "relay.unsubscribe":
+            guard allowed(.relay) else { return }
+            guard let channel = params["channel"] as? String else { return replyHandler(nil, "Missing channel") }
+            Task { @MainActor in await RelayManager.shared.unsubscribe(extensionID, channel: channel); replyHandler(nil, nil) }
 
         case "relay.send":
             guard allowed(.relay) else { return }

@@ -51,6 +51,19 @@ actor SatellaConnection {
         guard reply?.status == 200 else { throw Management.ProtocolError("Couldn\u{2019}t subscribe to \(channel).") }
     }
 
+    /// Stops passing on a channel's messages. Satella has no server-side unsubscribe, so it just drops the channel
+    /// locally (and won't re-subscribe it on the next reconnect).
+    func unsubscribe(_ channel: String) {
+        channels.removeAll { $0 == channel }
+    }
+
+    /// Test seam: simulate an unexpected network drop — kill the socket while we still think we're running, so the
+    /// `onClose` path (and an owner's reconnection) runs exactly as it would after a real disconnect. Not used in
+    /// normal operation.
+    func simulateDropForTesting() {
+        task?.cancel(with: .abnormalClosure, reason: nil)
+    }
+
     private func wireID(_ channel: String) -> String { "\(channel)@\(Self.version)" }
 
     // MARK: Connecting

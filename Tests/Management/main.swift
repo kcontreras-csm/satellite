@@ -45,6 +45,59 @@ if CommandLine.arguments.contains("--relay-selftest") {
     exit(holder.ok ? 0 : (result == .timedOut ? 0 : 1))
 }
 
+// Reconnection: a built-in connection that drops must come back and resume receiving on its channels — this is
+// what makes "it never stays disconnected" true. Wires onClose to reconnect (as RelayManager does), forces a
+// drop mid-session over the real relay, then checks a message sent AFTER the drop still arrives (proving the
+// socket reconnected AND re-subscribed). Prints RECONNECT-OK / RECONNECT-TIMEOUT.
+if CommandLine.arguments.contains("--relay-reconnect") {
+    final class Box { var receiver: SatellaConnection?; var sender: SatellaConnection?; var got = Set<String>() }
+    let box = Box()
+    let channel = "satadm.reconx.\(UInt32.random(in: 0..<1_000_000))"
+    let before = "before-\(UInt32.random(in: 0..<1_000_000))"
+    let after = "after-\(UInt32.random(in: 0..<1_000_000))"
+    let firstSem = DispatchSemaphore(value: 0)   // signalled when `before` arrives
+    let secondSem = DispatchSemaphore(value: 0)   // signalled when `after` arrives (post-reconnect)
+
+    func reconnect() {
+        Task {
+            // Back off briefly then restart; start() re-subscribes the channel list, same as RelayManager.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            for attempt in 0..<10 where await box.receiver?.isRunning != true {
+                do { try await box.receiver?.start(); break } catch { try? await Task.sleep(nanoseconds: 2_000_000_000); _ = attempt }
+            }
+        }
+    }
+
+    Task {
+        let receiver = SatellaConnection(host: SatellaConnection.defaultHost, identity: .create(), channels: [channel],
+            onRelay: { relay in
+                if relay.text == before { box.got.insert(before); firstSem.signal() }
+                if relay.text == after { box.got.insert(after); secondSem.signal() }
+            }, onClose: { reconnect() })
+        let sender = SatellaConnection(host: SatellaConnection.defaultHost, identity: .create(), channels: [], onRelay: { _ in })
+        box.receiver = receiver; box.sender = sender
+        do {
+            try await receiver.start()
+            try await sender.start()
+            try await Task.sleep(nanoseconds: 500_000_000)
+            await sender.send(before, on: channel)
+        } catch { print("RECONNECT-ERROR \(error.localizedDescription)"); firstSem.signal(); secondSem.signal() }
+    }
+
+    // 1) baseline delivery works, 2) force a drop, 3) delivery still works after the automatic reconnect.
+    let base = firstSem.wait(timeout: .now() + 15)
+    if base == .timedOut { print("RECONNECT-TIMEOUT (no baseline)"); exit(1) }
+    Task { await box.receiver?.simulateDropForTesting() }
+    Task {
+        try? await Task.sleep(nanoseconds: 6_000_000_000)   // let it notice the drop and reconnect+resubscribe
+        await box.sender?.send(after, on: channel)
+    }
+    let second = secondSem.wait(timeout: .now() + 20)
+    Task { await box.receiver?.stop(); await box.sender?.stop() }
+    print(second == .timedOut ? "RECONNECT-TIMEOUT (no delivery after drop)" : "RECONNECT-OK")
+    exit(second == .timedOut ? 1 : 0)
+}
+
 // MARK: Cross-language vector mode
 
 if CommandLine.arguments.contains("--emit-vector") {

@@ -20,6 +20,7 @@ final class RelayManager {
         let connection: SatellaConnection
         var retry = 2.0
         var reconnecting = false
+        var connected = false
     }
     private var conns: [String: Conn] = [:]
     private var identities: [String: Management.Keys] = [:]
@@ -33,6 +34,11 @@ final class RelayManager {
         try Self.check(channel)
         let conn = try await connection(for: id)
         try await conn.subscribe(channel)
+    }
+
+    func unsubscribe(_ id: String, channel: String) async {
+        guard let conn = conns[id]?.connection else { return }
+        await conn.unsubscribe(channel)
     }
 
     func send(_ id: String, channel: String, text: String) async throws {
@@ -56,7 +62,12 @@ final class RelayManager {
     // MARK: Connection per extension
 
     private func connection(for id: String) async throws -> SatellaConnection {
-        if let existing = conns[id]?.connection { return existing }
+        if let existing = conns[id] {
+            // Revive a connection that went dead and isn't already being retried (e.g. an earlier cold start that
+            // failed while the relay was unreachable). Channels the caller adds are replayed when it reconnects.
+            if !existing.connected, !existing.reconnecting { reconnect(id) }
+            return existing.connection
+        }
         let connection = SatellaConnection(
             host: SatellaConnection.defaultHost, identity: keys(for: id), channels: [],
             onRelay: { [weak self] relay in
@@ -66,8 +77,16 @@ final class RelayManager {
                 Task { @MainActor in self?.reconnect(id) }
             })
         conns[id] = Conn(connection: connection)
-        try await connection.start()
-        conns[id]?.retry = 2.0
+        do {
+            try await connection.start()
+            conns[id]?.connected = true
+            conns[id]?.retry = 2.0
+        } catch {
+            // Don't leave a dead connection: keep retrying in the background so it heals on its own, then report
+            // this first failure to the caller (the extension may also retry, which revives it via the branch above).
+            reconnect(id)
+            throw error
+        }
         return connection
     }
 
@@ -81,6 +100,7 @@ final class RelayManager {
     private func reconnect(_ id: String) {
         guard var conn = conns[id], !conn.reconnecting else { return }
         conn.reconnecting = true
+        conn.connected = false
         conns[id] = conn
         let delay = conn.retry
         Task { @MainActor in
@@ -89,6 +109,7 @@ final class RelayManager {
             do {
                 try await conn.connection.start()
                 conns[id]?.reconnecting = false
+                conns[id]?.connected = true
                 conns[id]?.retry = 2.0
             } catch {
                 conns[id]?.reconnecting = false

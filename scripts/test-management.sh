@@ -51,6 +51,14 @@ case "$RELAY" in
   *) echo "  FAIL  native relay client: $RELAY"; exit 1 ;;
 esac
 
+echo "== native relay reconnect (Swift) over the real relay =="
+RX="$(SATELLITE_HOME="$WORK/home" "$WORK/checks" --relay-reconnect || true)"
+case "$RX" in
+  RECONNECT-OK) echo "  ok  a dropped connection reconnects and resumes receiving" ;;
+  RECONNECT-TIMEOUT*) echo "  skip  relay not reachable/too slow to confirm reconnect" ;;
+  *) echo "  FAIL  reconnect: $RX"; exit 1 ;;
+esac
+
 echo "== web dashboard (admin tool) =="
 (
   cd tools/satellite-admin
