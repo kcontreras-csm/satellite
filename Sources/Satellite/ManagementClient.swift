@@ -25,6 +25,9 @@ final class ManagementClient: ObservableObject {
     private var keys: Management.Keys?
     private var connection: SatellaConnection?
     private var inventoryTimer: Timer?
+    /// While the admin hasn't acknowledged this device yet, re-announce often (the admin may have started after
+    /// the device). Stops once confirmed, when the slower inventory timer takes over.
+    private var announceTimer: Timer?
     private var started = false
 
     private init() { state = ManagementState.load() }
@@ -108,6 +111,7 @@ final class ManagementClient: ObservableObject {
             status = .online
             await report()
             scheduleReports()
+            scheduleAnnounce(state)
         } catch {
             status = .offline(error.localizedDescription)
             try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)   // a managed laptop is often offline at launch
@@ -119,6 +123,19 @@ final class ManagementClient: ObservableObject {
         inventoryTimer?.invalidate()
         inventoryTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.report(kind: "inventory") }
+        }
+    }
+
+    /// Re-announce every 20s until the admin acknowledges us, so a device that came up before the admin's `serve`
+    /// is picked up within seconds of the admin starting — not up to 30 minutes later.
+    private func scheduleAnnounce(_ state: ManagementState) {
+        announceTimer?.invalidate()
+        guard !state.confirmed else { return }
+        announceTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] timer in
+            Task { @MainActor in
+                guard let self, self.state?.confirmed == false else { timer.invalidate(); return }
+                await self.report()
+            }
         }
     }
 
@@ -193,6 +210,8 @@ final class ManagementClient: ObservableObject {
         state.confirmed = true
         state.save()
         self.state = state
+        announceTimer?.invalidate()   // acknowledged; the slow inventory timer is enough now
+        announceTimer = nil
     }
 
     private func applyIfNewer(_ policy: ManagementPolicy) {
