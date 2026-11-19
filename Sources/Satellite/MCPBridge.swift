@@ -23,6 +23,7 @@ enum MCPDefaults {
     /// Management bookkeeping, read by the UI to show what an admin has locked.
     static let blockedExtensions = "managedBlockedExtensions"
     static let lockedSettings = "managedLockedSettings"
+    static let disabledExtensions = "managedDisabledExtensions"
 
     static var currentMode: MCPMode {
         (UserDefaults.standard.string(forKey: mode)).flatMap(MCPMode.init) ?? .full
@@ -30,6 +31,8 @@ enum MCPDefaults {
     /// The setting keys an admin has locked (so the UI can disable them).
     static var lockedSettingKeys: [String] { UserDefaults.standard.stringArray(forKey: lockedSettings) ?? [] }
     static var blockedExtensionIDs: [String] { UserDefaults.standard.stringArray(forKey: blockedExtensions) ?? [] }
+    /// Extensions an admin switched off with a `disable` command. Only an `enable` command from the admin lifts this.
+    static var adminDisabledIDs: [String] { UserDefaults.standard.stringArray(forKey: disabledExtensions) ?? [] }
 }
 
 @MainActor
