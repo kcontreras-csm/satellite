@@ -160,7 +160,7 @@ An extension is a folder with a `manifest.json` (and its scripts), in `~/Library
       "settings": [{ "key": "label", "type": "string", "title": "Label", "default": "Queue" }]
     }
 
-Scripts run in an isolated world with top-level `await` and a `satellite` API. Each call needs its permission in the manifest (`settings` needs none). A `"background"` script runs at startup with no page open, and `"type": "library"` extensions are loaded by others with `require('<id>')`.
+Scripts run in an isolated world with top-level `await` and a `satellite` API. Each call needs its permission in the manifest (`settings` needs none). A `"background"` script runs at startup with no page open, and `"type": "library"` extensions are loaded by others with `require('<id>')`. `"web_root": "<folder>"` serves that folder of the extension as web pages at `satellite-ext://<id>/` (its `index.html` by default), so a sidebar item the extension adds can open a web app it ships, WebAssembly included, with no server. Only that folder is served, only to the extension's own pages (websites and other extensions get 403), and only while the extension is enabled; the pages are a secure context with their own IndexedDB and localStorage but no `satellite` API. It works from development folders only for now: the store installs just the files a manifest lists. `scripts/test-webroot.sh` checks it.
 
     satellite.storage.get / set / remove            // "storage"
     satellite.notify(title, body)                   // "notifications" (bundled app only)

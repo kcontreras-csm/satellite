@@ -580,6 +580,7 @@ enum ExtensionScaffold {
       hidden: boolean; builtin: boolean; owner: string | null; readOnly: boolean;
     }
     interface SatelliteSidebarInput {
+      /** An http(s) URL, or one of this extension's own pages: satellite-ext://<extension id>/<path in web_root>. */
       id: string; name: string; url: string; symbol?: string; badge?: string | number | null; index?: number; hidden?: boolean;
     }
     interface SatelliteSidebarPatch {
@@ -787,6 +788,7 @@ enum ExtensionScaffold {
         "all_frames": { "type": "boolean" },
         "world": { "enum": ["isolated", "main"], "description": "isolated: DOM + the satellite API. main: the page's own JavaScript, no API." },
         "background": { "type": "string", "description": "A script that runs once at startup with no page open (world must be isolated)." },
+        "web_root": { "type": "string", "description": "A folder served as web pages at satellite-ext://<id>/ (index.html by default), which sidebar items can open. Development folders only for now." },
         "settings": {
           "type": "array",
           "items": {

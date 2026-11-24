@@ -119,6 +119,10 @@ func sha1Hex(_ text: String) -> String {
 
 /// Checks an extension's file list against the limits and that the files its manifest needs are present.
 func validateStoreEntryFiles(_ manifest: ExtensionManifest, files: [StoreFile]) throws {
+    // Its pages aren't listed file by file, so an install couldn't fetch them.
+    guard manifest.webRoot == nil else {
+        throw StoreError.invalid("has a \u{201C}web_root\u{201D}, which works only from a development folder for now")
+    }
     guard files.count <= StoreLimits.maxFilesPerExtension else {
         throw StoreError.invalid("has more than \(StoreLimits.maxFilesPerExtension) files")
     }

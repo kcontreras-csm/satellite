@@ -285,6 +285,11 @@ enum PageSnapshot {
                     var line = "- `\(framePrefix)\(item["selector"] as? String ?? "?")`"
                     if let role = item["role"] as? String, !role.isEmpty { line += " \(role)" }
                     if let text = item["text"] as? String, !text.isEmpty { line += " \u{201C}\(text)\u{201D}" }
+                    if let value = item["value"] as? String { line += " = \u{201C}\(value)\u{201D}" }
+                    if let checked = item["checked"] as? Bool { line += checked ? " [checked]" : " [not checked]" }
+                    else if item["checked"] as? String == "mixed" { line += " [partly checked]" }
+                    if item["selected"] as? Bool == true { line += " [selected]" }
+                    if let options = item["options"] as? String, !options.isEmpty { line += " (options: \(options))" }
                     if let href = item["href"] as? String, !href.isEmpty { line += " \u{2192} \(href)" }
                     if item["hidden"] as? Bool == true { line += " (hidden)" }
                     out += line + "\n"
@@ -627,13 +632,85 @@ enum PageSnapshot {
 
     const interactive = [];
     let interactiveOmitted = 0;
+    // What a form control holds now: the selected option of a dropdown, the text in a field, whether a box is
+    // checked. These are properties, not attributes, so neither the HTML nor the page text shows them otherwise.
+    // Only with all text kept (they're page content), and never a password, hidden or file input.
+    const SECRET_INPUT = /^(password|hidden|file)$/i;
+    const optionLabel = (o) => String(o.label || o.text || o.value || '').replace(/\s+/g, ' ').trim();
+    const controlState = (el) => {
+      const state = {};
+      const tag = el.localName;
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      const role = el.getAttribute('role') || '';
+      if (tag === 'input' && /^(checkbox|radio)$/.test(type)) { state.checked = !!el.checked; return state; }
+      if (/^(checkbox|switch|radio|menuitemcheckbox|menuitemradio)$/.test(role)) {
+        const checked = el.getAttribute('aria-checked');
+        if (checked) state.checked = checked === 'true' ? true : checked === 'mixed' ? 'mixed' : false;
+        return state;
+      }
+      if (role === 'option' || role === 'tab' || role === 'treeitem') {
+        if (el.getAttribute('aria-selected') === 'true') state.selected = true;
+        return state;
+      }
+      if (mode !== 'full') return state;
+      if (tag === 'select') {
+        state.value = Array.from(el.selectedOptions || []).map(optionLabel).join(', ');
+        state.options = Array.from(el.options || []).map(optionLabel);
+        return state;
+      }
+      if ((tag === 'input' && !SECRET_INPUT.test(type)) || tag === 'textarea') { state.value = String(el.value || ''); return state; }
+      // Lightning base components (lightning-combobox, lightning-input, …) keep their value as a public property,
+      // and a combobox its choices as `options` ({ label, value }); show the label the user sees.
+      if (tag.startsWith('lightning-') && !SECRET_INPUT.test(String(el.type || ''))) {
+        let value;
+        try { value = el.value; } catch (e) {}
+        let options;
+        try { options = Array.isArray(el.options) ? el.options : null; } catch (e) {}
+        if (options) {
+          const chosen = options.find((o) => o && o.value === value);
+          state.options = options.map((o) => optionLabel(o || {}));
+          if (chosen) value = optionLabel(chosen);
+        }
+        if (typeof value === 'string' || typeof value === 'number') state.value = String(value);
+        return state;
+      }
+      // An ARIA combobox drawn as a button (Lightning's own): what it shows is the selection.
+      if (role === 'combobox') {
+        const shown = el.getAttribute('aria-valuetext') || (typeof el.value === 'string' ? el.value : '') || composedText(el);
+        state.value = shown.replace(/\s+/g, ' ').trim();
+      }
+      return state;
+    };
+    // A form control's own label (`<label for>`, aria-labelledby) rather than its contents: a dropdown's text
+    // is every option run together.
+    const controlLabel = (el) => {
+      try {
+        if (el.labels && el.labels.length) return Array.from(el.labels).map((l) => l.textContent).join(' ');
+      } catch (e) {}
+      const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      const root = el.getRootNode();
+      const named = ids.map((id) => (root.getElementById ? root.getElementById(id) : document.getElementById(id))).filter(Boolean);
+      return named.map((n) => n.textContent).join(' ');
+    };
     const describe = (el, hidden) => {
-      const labelText = mode === 'none' ? '' : (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('label') || (agent ? composedText(el) : el.textContent) || '');
+      const formControl = /^(select|input|textarea|lightning-(combobox|input|textarea|dual-listbox|radio-group|checkbox-group))$/.test(el.localName)
+        || el.getAttribute('role') === 'combobox';
+      const labelText = mode === 'none' ? '' : (el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('label')
+        || (formControl ? controlLabel(el) || el.getAttribute('placeholder') || el.getAttribute('name') || '' : '')
+        || (formControl && el.localName === 'select' ? '' : agent ? composedText(el) : el.textContent) || '');
       const item = {
         selector: agent ? shortSelectorFor(el) : selectorFor(el),
         role: el.getAttribute('role') || (el.localName === 'input' ? 'input:' + (el.getAttribute('type') || 'text') : el.localName),
-        text: isLabelish(el) || el.localName === 'input' || mode === 'full' ? trunc(labelText.replace(/\s+/g, ' ').trim(), 60) : '',
+        text: isLabelish(el) || formControl || mode === 'full' ? trunc(labelText.replace(/\s+/g, ' ').trim(), 60) : '',
       };
+      const state = controlState(el);
+      if (state.value !== undefined) item.value = trunc(state.value, 200);
+      if (state.options && agent) {
+        const shown = state.options.filter(Boolean).slice(0, 30).map((o) => trunc(o, 40));
+        item.options = shown.join(' | ') + (state.options.length > 30 ? ' | …' + (state.options.length - 30) + ' more' : '');
+      }
+      if (state.checked !== undefined) item.checked = state.checked;
+      if (state.selected) item.selected = true;
       if (agent && el.localName === 'a' && el.getAttribute('href')) item.href = safeUrl(el.getAttribute('href'));
       if (hidden) item.hidden = true;
       return item;
@@ -649,7 +726,7 @@ enum PageSnapshot {
       for (const [el, hidden] of shown.map((el) => [el, false]).concat(hiddenOnes.map((el) => [el, true]))) {
         if (interactive.length >= interactiveLimit || size >= interactiveChars) { interactiveOmitted++; continue; }
         const item = describe(el, hidden);
-        size += item.selector.length + item.text.length + (item.href || '').length + 16;
+        size += item.selector.length + item.text.length + (item.href || '').length + (item.value || '').length + (item.options || '').length + 16;
         interactive.push(item);
       }
     } else {
@@ -683,6 +760,12 @@ enum PageSnapshot {
       const walk = (node) => {
         for (let child = node.firstChild; child && size < textBudget; child = child.nextSibling) {
           if (child.nodeType === 3) { line += child.nodeValue + ' '; continue; }
+          // A field shows its value where it is, in brackets: `Status [New]`.
+          if (child.nodeType === 1 && /^(select|input|textarea)$/.test(child.localName) && visible(child)) {
+            const value = controlState(child).value;
+            if (value) line += '[' + trunc(value.replace(/\s+/g, ' ').trim(), 200) + '] ';
+            continue;
+          }
           if (child.nodeType !== 1 || SKIP.has(child.localName) || !visible(child)) continue;
           if (isRow(child)) {
             flush();
