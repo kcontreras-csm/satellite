@@ -131,6 +131,9 @@ struct ExtensionManifest: Codable, Hashable {
     var world: String
     var background: String?
     var settings: [SettingDefinition]
+    /// A folder of the extension served as web pages at satellite-ext://<id>/ (WebRootSchemeHandler), so a sidebar
+    /// item can open a page the extension ships. Only that folder is served, never the rest of the extension.
+    var webRoot: String? = nil
 
     var semver: SemVer { SemVer(version) ?? SemVer(0, 0, 0) }
     var iconSpec: ExtensionIconSpec { ExtensionIconSpec(icon) }
@@ -275,6 +278,11 @@ struct ExtensionManifest: Codable, Hashable {
             }
         }
 
+        if let webRoot = raw.webRoot {
+            guard isSafeRelativePath(webRoot) else { throw ManifestError("\u{201C}web_root\u{201D} must be a relative folder path") }
+            guard kind == .contentScript else { throw ManifestError("a library cannot have a \u{201C}web_root\u{201D}") }
+        }
+
         let settings = try (raw.settings ?? []).map { try $0.validated() }
         guard settings.count <= ExtensionSettings.maxSettings else {
             throw ManifestError("at most \(ExtensionSettings.maxSettings) settings are allowed")
@@ -289,7 +297,8 @@ struct ExtensionManifest: Codable, Hashable {
             icon: raw.icon, homepage: raw.homepage, license: raw.license, category: raw.category,
             keywords: raw.keywords ?? [], kind: kind, dependencies: dependencies, minAppVersion: raw.minAppVersion,
             permissions: permissions, matches: matches, excludeMatches: raw.excludeMatches ?? [], js: js, css: css,
-            runAt: runAt, allFrames: raw.allFrames ?? false, world: world, background: raw.background, settings: settings)
+            runAt: runAt, allFrames: raw.allFrames ?? false, world: world, background: raw.background, settings: settings,
+            webRoot: raw.webRoot)
     }
 
     /// Every file the manifest refers to, relative to the extension folder.
@@ -338,6 +347,7 @@ private struct RawManifest: Decodable {
     var world: String?
     var background: String?
     var settings: [SettingDefinition]?
+    var webRoot: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, version, author, description, icon, homepage, license, category, keywords, type
@@ -346,6 +356,7 @@ private struct RawManifest: Decodable {
         case excludeMatches = "exclude_matches"
         case runAt = "run_at"
         case allFrames = "all_frames"
+        case webRoot = "web_root"
     }
 }
 

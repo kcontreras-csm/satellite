@@ -121,7 +121,7 @@ final class WebPane: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         guard let url = navigationAction.request.url else { return decisionHandler(.allow) }
 
         let scheme = url.scheme?.lowercased() ?? ""
-        if !["http", "https", "about", "blob", "data", "file"].contains(scheme) {
+        if !["http", "https", "about", "blob", "data", "file", WebRootSchemeHandler.scheme].contains(scheme) {
             // mailto:, tel:, slack:, etc. belong to other apps.
             NSWorkspace.shared.open(url)
             return decisionHandler(.cancel)

@@ -29,6 +29,7 @@ enum WebEnvironment {
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
         config.preferences.isElementFullscreenEnabled = true
         config.mediaTypesRequiringUserActionForPlayback = []
+        config.setURLSchemeHandler(WebRootSchemeHandler.shared, forURLScheme: WebRootSchemeHandler.scheme)
         return config
     }
 

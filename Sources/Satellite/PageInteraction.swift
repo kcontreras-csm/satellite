@@ -79,13 +79,32 @@ enum PageInteraction {
 
     // MARK: - Scripts
 
-    /// Resolves a `PageSnapshot` selector: plain CSS within a root, `>>` to cross into a shadow root.
-    private static let resolver = #"""
-    function __satelliteResolve(full) {
+    /// Resolves a `PageSnapshot` selector: plain CSS within a root, `>>` to cross into a shadow root. The first part
+    /// may start inside a shadow root: an agent's snapshot leaves out the hosts above it when what's left still
+    /// finds only that element, so when the document has no match, the first match in an open shadow root counts.
+    /// `PageSnapshot`'s collector runs this same code to check every selector it shortens.
+    static let resolver = #"""
+    function __satelliteShadowRoots() {
+      const roots = [];
+      const queue = [document];
+      for (let i = 0; i < queue.length && queue.length < 4000; i++) {
+        for (const el of queue[i].querySelectorAll('*')) {
+          if (el.shadowRoot) { roots.push(el.shadowRoot); queue.push(el.shadowRoot); }
+        }
+      }
+      return roots;
+    }
+    function __satelliteResolve(full, shadowRoots) {
       const parts = full.split(/\s*>>\s*/).filter(Boolean);
       let root = document, el = null;
       for (let i = 0; i < parts.length; i++) {
         el = root.querySelector(parts[i]);
+        if (!el && i === 0) {
+          for (const shadow of shadowRoots || __satelliteShadowRoots()) {
+            el = shadow.querySelector(parts[0]);
+            if (el) break;
+          }
+        }
         if (!el) return null;
         if (i < parts.length - 1) {
           if (!el.shadowRoot) return null;

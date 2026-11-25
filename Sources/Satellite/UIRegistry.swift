@@ -141,7 +141,7 @@ final class UIRegistry {
         guard let local = input["id"] as? String, Self.isValidLocalID(local) else {
             throw ManifestError("Item \u{201C}id\u{201D} must be 1\u{2013}40 letters, digits, \u{201C}.\u{201D}, \u{201C}-\u{201D} or \u{201C}_\u{201D}")
         }
-        let patch = try Self.parsePatch(input, requireNameAndURL: true)
+        let patch = try Self.parsePatch(input, requireNameAndURL: true, owner: owner)
         let id = "\(owner)/\(local)"
 
         var list = added[section] ?? []
@@ -170,7 +170,7 @@ final class UIRegistry {
 
     /// Changes an item the caller added, or layers a change over a built-in item.
     func update(_ section: SidebarSection, owner: String, id: String, input: [String: Any]) throws {
-        let patch = try Self.parsePatch(input, requireNameAndURL: false)
+        let patch = try Self.parsePatch(input, requireNameAndURL: false, owner: owner)
         let own = "\(owner)/\(id)"
 
         if let position = added[section]?.firstIndex(where: { $0.item.id == own }) {
@@ -250,7 +250,8 @@ final class UIRegistry {
         ManifestError("No item \u{201C}\(id)\u{201D} in the \(section.rawValue) list. Use list() to see the available ids.")
     }
 
-    private static func parsePatch(_ input: [String: Any], requireNameAndURL: Bool) throws -> SidebarPatch {
+    /// `owner` may also point items at its own pages, satellite-ext://<owner>/… (see WebRootSchemeHandler).
+    private static func parsePatch(_ input: [String: Any], requireNameAndURL: Bool, owner: String) throws -> SidebarPatch {
         var patch = SidebarPatch()
 
         if let raw = input["name"] {
@@ -263,8 +264,16 @@ final class UIRegistry {
         }
 
         if let raw = input["url"] {
-            guard let text = raw as? String, let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            guard let text = raw as? String, let url = URL(string: text), let host = url.host else {
                 throw ManifestError("\u{201C}url\u{201D} must be an http(s) URL")
+            }
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == WebRootSchemeHandler.scheme {
+                guard host.lowercased() == owner else {
+                    throw ManifestError("\u{201C}url\u{201D} can open only this extension's own pages (\(WebRootSchemeHandler.scheme)://\(owner)/\u{2026})")
+                }
+            } else if !["http", "https"].contains(scheme) {
+                throw ManifestError("\u{201C}url\u{201D} must be an http(s) URL or \(WebRootSchemeHandler.scheme)://\(owner)/\u{2026}")
             }
             patch.url = url
         } else if requireNameAndURL {

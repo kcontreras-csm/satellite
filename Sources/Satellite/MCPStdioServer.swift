@@ -41,13 +41,15 @@ enum MCPStdioServer {
             "name": "read_page",
             "description": "Reads any page open in Satellite by its id from list_open_pages \u{2014} a background tab, another app\u{2019}s tab, or a web assistant \u{2014} without switching to it: its URL, title and visible content as Markdown. Satellite asks the user once per agent before sharing pages, the same as \u{201C}Send to Assistant\u{201D}.",
             "inputSchema": ["type": "object", "required": ["tab"],
-                             "properties": ["tab": ["type": "string", "description": "A page id from list_open_pages."]]],
+                             "properties": ["tab": ["type": "string", "description": "A page id from list_open_pages."],
+                                            "within": ["type": "string", "description": "Optional. Only this part of the page, with the whole answer's room for it: a selector from Interactive elements, or text naming the part as it reads on the page (a panel's or dialog's title, like \u{201C}Get Records\u{201D}). Use it when the answer says controls were not listed."]]],
         ],
         [
             "name": "read_active_page",
             "description": "Reads the page shown now in Satellite\u{2019}s apps panel (not this terminal): its URL, title and visible content as Markdown, including a list of clickable elements with selectors for click_element and type_text. Pass `app` for another app\u{2019}s current tab instead; read_page reads any tab. Satellite asks the user once per agent before sharing pages, the same as \u{201C}Send to Assistant\u{201D}.",
             "inputSchema": ["type": "object",
-                             "properties": ["app": ["type": "string", "description": "An app\u{2019}s or assistant\u{2019}s name or id, from list_open_pages. Omit for the page shown now."]]],
+                             "properties": ["app": ["type": "string", "description": "An app\u{2019}s or assistant\u{2019}s name or id, from list_open_pages. Omit for the page shown now."],
+                                            "within": ["type": "string", "description": "Optional. Only this part of the page, with the whole answer's room for it: a selector from Interactive elements, or text naming the part as it reads on the page (a panel's or dialog's title, like \u{201C}Get Records\u{201D}). Use it when the answer says controls were not listed."]]],
         ],
         [
             "name": "click_element",
