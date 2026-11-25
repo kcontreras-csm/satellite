@@ -187,9 +187,26 @@ final class ExtensionManager: ObservableObject {
         install()
     }
 
-    func setEnabled(_ id: String, _ enabled: Bool) {
+    /// Whether an administrator's `disable` command is holding this extension off. The user can't turn it back on.
+    func isDisabledByAdmin(_ id: String) -> Bool { MCPDefaults.adminDisabledIDs.contains(id) }
+
+    /// `byAdmin` is for management commands only; any other caller is refused while an admin has it disabled.
+    func setEnabled(_ id: String, _ enabled: Bool, byAdmin: Bool = false) {
+        if !byAdmin, enabled, isDisabledByAdmin(id) { return }
         UserDefaults.standard.set(enabled, forKey: Self.defaultsKey(id))
         reload()
+    }
+
+    /// Reloads every open page (and any page with a matching frame) the extension runs on. Injected scripts live
+    /// until their page is reloaded, so this is what makes turning an extension off or on take effect right away.
+    func reloadPages(matching manifest: ExtensionManifest) {
+        for view in WebPane.liveWebViews.allObjects {
+            var urls = [view.url].compactMap { $0 }
+            urls += MainActor.assumeIsolated { FrameRegistry.shared.frames(of: view) }.compactMap { URL(string: $0.url) }
+            if urls.contains(where: { MatchPattern.matches($0, patterns: manifest.matches, excludes: manifest.excludeMatches) }) {
+                view.reload()
+            }
+        }
     }
 
     /// Extensions (any state) whose manifest lists `id` as a dependency.
@@ -220,7 +237,8 @@ final class ExtensionManager: ObservableObject {
     private static func defaultsKey(_ id: String) -> String { "extension.enabled.\(id)" }
 
     private static func storedEnabled(_ id: String) -> Bool {
-        UserDefaults.standard.object(forKey: defaultsKey(id)) as? Bool ?? true
+        if MCPDefaults.adminDisabledIDs.contains(id) { return false }
+        return UserDefaults.standard.object(forKey: defaultsKey(id)) as? Bool ?? true
     }
 
     private static func scan(_ dir: URL, enabled: Bool) -> ExtensionInfo {

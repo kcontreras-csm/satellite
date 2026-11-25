@@ -38,7 +38,7 @@ enum PolicyEnforcer {
 
         let manager = ExtensionManager.shared
         for id in policy.blockedIds where manager.info(id) != nil {
-            try? manager.uninstall(id)
+            remove(id)
         }
 
         for (key, value) in policy.lockedSettings {
@@ -53,17 +53,42 @@ enum PolicyEnforcer {
         installPinned(policy.pinned)
     }
 
+    /// One-off commands from the admin. Each takes effect at once: open pages are reloaded so a disabled or removed
+    /// extension stops running in them (and an enabled one starts), and the user can't override it from Settings.
     static func run(_ command: String, on id: String) {
         let manager = ExtensionManager.shared
         switch command {
-        case "uninstall": try? manager.uninstall(id)
-        case "disable": manager.setEnabled(id, false)
-        case "enable": manager.setEnabled(id, true)
+        case "uninstall":
+            remove(id)
+        case "disable":
+            let manifest = manager.info(id)?.manifest
+            setLock(id, held: true)
+            manager.setEnabled(id, false, byAdmin: true)
+            if let manifest { manager.reloadPages(matching: manifest) }
+        case "enable":
+            setLock(id, held: false)
+            manager.setEnabled(id, true, byAdmin: true)
+            if let manifest = manager.info(id)?.manifest { manager.reloadPages(matching: manifest) }
         default: break
         }
     }
 
     // MARK: Helpers
+
+    /// Uninstalls an extension and reloads the pages it was running in.
+    private static func remove(_ id: String) {
+        let manager = ExtensionManager.shared
+        let manifest = manager.info(id)?.manifest
+        try? manager.uninstall(id)
+        if let manifest { manager.reloadPages(matching: manifest) }
+    }
+
+    /// Records (or lifts) the admin's hold on an extension, so it survives a relaunch and the user can't undo it.
+    private static func setLock(_ id: String, held: Bool) {
+        var ids = Set(MCPDefaults.adminDisabledIDs)
+        if held { ids.insert(id) } else { ids.remove(id) }
+        UserDefaults.standard.set(ids.sorted(), forKey: MCPDefaults.disabledExtensions)
+    }
 
     /// A locked setting's stored value differs from the policy word for the boolean ones.
     private static func mappedValue(_ key: String, _ value: String) -> Any {

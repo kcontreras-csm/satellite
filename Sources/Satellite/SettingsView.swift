@@ -136,6 +136,7 @@ private struct ExtensionsSettings: View {
                         openSettings: { settingsFor = info },
                         openLogs: { logsFor = info },
                         openEditor: { CodeEditor.open(info.directory) },
+                        lockedByAdmin: manager.isDisabledByAdmin(info.id),
                         setEnabled: { manager.setEnabled(info.id, $0) },
                         update: { detail = $0 },
                         checkGitHub: { installFromGitHub($0) },
@@ -198,6 +199,8 @@ private struct ExtensionRow: View {
     let openSettings: () -> Void
     let openLogs: () -> Void
     let openEditor: () -> Void
+    /// An administrator has switched this extension off; the toggle is held off.
+    let lockedByAdmin: Bool
     let setEnabled: (Bool) -> Void
     let update: (StoreEntry) -> Void
     let checkGitHub: (String) -> Void
@@ -240,7 +243,10 @@ private struct ExtensionRow: View {
                     Toggle("", isOn: Binding(get: { info.isEnabled }, set: setEnabled))
                         .labelsHidden()
                         .toggleStyle(.switch)
-                        .disabled(info.error != nil)
+                        .disabled(info.error != nil || lockedByAdmin)
+                    if lockedByAdmin {
+                        Text("Disabled by your administrator").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 if let entry = store.update(for: info.id) {
                     Button("Update to \(entry.manifest.version)") { update(entry) }.controlSize(.small)

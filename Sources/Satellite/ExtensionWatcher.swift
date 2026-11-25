@@ -112,22 +112,12 @@ final class ExtensionWatcher {
             messages.append("Reloaded \(info.displayName)")
             // Only extensions being developed reload the pages they run on; a store update doesn't disturb your work.
             if info.origin == nil, info.isActive, let manifest = info.manifest, manifest.runsOnPages {
-                reloadPages(matching: manifest)
+                manager.reloadPages(matching: manifest)
             }
         }
         guard !messages.isEmpty else { return }
         let text = messages.count > 2 ? "Reloaded \(messages.count) extensions" : messages.joined(separator: "  \u{00B7}  ")
         NotificationCenter.default.post(name: .extensionsHotReloaded, object: nil, userInfo: ["message": text, "isError": failed])
-    }
-
-    private func reloadPages(matching manifest: ExtensionManifest) {
-        for view in WebPane.liveWebViews.allObjects {
-            var urls = [view.url].compactMap { $0 }
-            urls += FrameRegistry.shared.frames(of: view).compactMap { URL(string: $0.url) }
-            if urls.contains(where: { MatchPattern.matches($0, patterns: manifest.matches, excludes: manifest.excludeMatches) }) {
-                view.reload()
-            }
-        }
     }
 
     private static func realPath(_ path: String) -> String? {
