@@ -139,6 +139,9 @@ enum PageSnapshot {
         var visibleText = 30_000
         /// The Settings > General option that decides `text`, named when text is left out.
         var textSetting = "Page text in snapshots"
+        /// With `forAgent`: only this part of the page, a selector (as listed in a snapshot) or text naming it (a
+        /// panel's or dialog's title, say), so the whole budget goes to it.
+        var within: String?
     }
 
     /// Captures the page shown in `webView`, including its frames, as a Markdown document.
@@ -154,7 +157,10 @@ enum PageSnapshot {
                 FrameRegistry.shared.forget(webView, path: record.path)   // the frame went away
             }
         }
-        return compose(main: main, frames: children, options: options)
+        if let within = options.within, !within.isEmpty, main.withinMissing, children.allSatisfy(\.withinMissing) {
+            throw PageSnapshotError("Nothing on the page matches within: \u{201C}\(within)\u{201D}. Pass a selector from the Interactive elements, or the title of a panel or dialog as it reads on the page.")
+        }
+        return compose(main: main, frames: children.filter { !$0.withinMissing }, options: options)
     }
 
     private static func collect(in webView: WKWebView, frame: WKFrameInfo?, options: Options, budget: Int) async throws -> Captured {
@@ -164,6 +170,7 @@ enum PageSnapshot {
             "agent": options.forAgent,
             "interactiveChars": frame == nil ? options.interactiveChars : min(options.interactiveChars, budget),
             "visibleText": frame == nil ? options.visibleText : min(options.visibleText, budget),
+            "within": options.forAgent ? options.within ?? "" : "",
         ] as [String: Any]]
         let value: Any? = try await withThrowingTaskGroup(of: Any?.self) { group in
             group.addTask { @MainActor in
@@ -196,6 +203,10 @@ enum PageSnapshot {
         var interactiveOmitted: Int
         /// With `forAgent`: the page's visible text, a line per block and a `|`-joined line per table row.
         var visibleText: String
+        /// With `forAgent`: the HTML was left out (the page only fit as an outline, or `within` picked a part).
+        var htmlLeftOut: Bool
+        /// `within` matched nothing here.
+        var withinMissing: Bool
         var globals: [[String: Any]]
         var hints: [String]
         var scripts: [String]
@@ -214,6 +225,8 @@ enum PageSnapshot {
             interactive = d["interactive"] as? [[String: Any]] ?? []
             interactiveOmitted = (d["interactiveOmitted"] as? NSNumber)?.intValue ?? 0
             visibleText = d["visibleText"] as? String ?? ""
+            htmlLeftOut = d["htmlLeftOut"] as? Bool ?? false
+            withinMissing = d["withinMissing"] as? Bool ?? false
             globals = d["globals"] as? [[String: Any]] ?? []
             hints = d["hints"] as? [String] ?? []
             scripts = d["scripts"] as? [String] ?? []
@@ -244,6 +257,7 @@ enum PageSnapshot {
         if options.forAssistant, options.text != .full { out += " (the user can include all of it in Satellite\u{2019}s Settings > General > \(options.textSetting))" }
         out += "\n"
         if !main.hints.isEmpty { out += "- **Looks like:** \(main.hints.joined(separator: "; "))\n" }
+        if let within = options.within, !within.isEmpty { out += "- **Within:** only the part of the page that \u{201C}\(within)\u{201D} names\n" }
         out += "- **Frames:** \(frames.isEmpty ? "none besides the main page" : frames.map { "\($0.pathLabel) (\($0.url))" }.joined(separator: ", "))\n"
         out += "\n"
 
@@ -252,7 +266,7 @@ enum PageSnapshot {
             out += "## Task\n\n_Describe here what the extension should do (and on which part of the page)._\n\n"
         }
 
-        for page in [main] + frames {
+        for page in [main] + frames where !(page.withinMissing && options.within?.isEmpty == false) {
             let heading = page.path.isEmpty ? "Page" : "Frame \(page.path.map(String.init).joined(separator: "."))"
             out += "## \(heading)\n\n"
             if !page.path.isEmpty { out += "- **URL:** \(page.url)\n- **Title:** \(page.title)\n" }
@@ -274,7 +288,7 @@ enum PageSnapshot {
             if !page.interactive.isEmpty {
                 out += "### Interactive elements\n\n"
                 if options.forAgent {
-                    out += "Visible ones first, in the order they're shown. Pass a selector as it is to click_element or type_text (`>>` is where it enters a shadow root"
+                    out += "Visible ones first: those in an open dialog or panel (or around the focused field) before the rest, each in the order they're shown. Pass a selector as it is to click_element or type_text (`>>` is where it enters a shadow root, and one may start inside a shadow root"
                     out += page.path.isEmpty ? ").\n\n" : "; the `frame:` at its start says which frame it's in).\n\n"
                 } else {
                     out += "Selectors use `>>` where the path enters a shadow root (`document.querySelector` cannot cross it; query the host's `shadowRoot` next).\n\n"
@@ -294,7 +308,10 @@ enum PageSnapshot {
                     if item["hidden"] as? Bool == true { line += " (hidden)" }
                     out += line + "\n"
                 }
-                if page.interactiveOmitted > 0 { out += "- \u{2026}and \(page.interactiveOmitted) more, not listed (to keep the answer within an agent\u{2019}s limit)\n" }
+                if page.interactiveOmitted > 0 {
+                    out += "- \u{2026}and \(page.interactiveOmitted) more, not listed (to keep the answer within an agent\u{2019}s limit"
+                    out += options.forAgent ? "; pass `within` to read just one part of the page)\n" : ")\n"
+                }
                 out += "\n"
             }
 
@@ -303,7 +320,11 @@ enum PageSnapshot {
                 out += "````text\n\(page.visibleText)\n````\n\n"
             }
 
-            out += "### HTML\n\n````html\n\(page.html)\n````\n\n"
+            if page.htmlLeftOut {
+                out += "### HTML\n\nLeft out: \(options.within?.isEmpty == false ? "only part of the page was asked for" : "the page only fit as an outline") and the controls and text above are what an agent can use.\n\n"
+            } else {
+                out += "### HTML\n\n````html\n\(page.html)\n````\n\n"
+            }
         }
         return out
     }
@@ -349,7 +370,7 @@ enum PageSnapshot {
     // MARK: Collector
 
     /// Runs inside a page (or frame) and returns everything the Markdown is built from.
-    private static let collectorScript = #"""
+    private static let collectorScript = PageInteraction.resolver + #"""
     const mode = (options && options.text) || 'labels';
     const budget = (options && options.budget) || 400000;
     const interactiveLimit = (options && options.interactiveLimit) || 300;
@@ -399,6 +420,35 @@ enum PageSnapshot {
     for (let i = 0; i < roots.length && roots.length < 4000; i++) {
       for (const el of roots[i].querySelectorAll('*')) {
         if (el.shadowRoot) roots.push(el.shadowRoot);
+      }
+    }
+
+    const agent = !!(options && options.agent);
+    // The composed parent: across a shadow boundary, the host.
+    const up = (n) => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+    const insideOf = (el, container) => { for (let n = el; n; n = up(n)) if (n === container) return true; return false; };
+
+    // `within`: one part of the page, a selector or text naming it. Text finds the heading, label or titled
+    // element that says it (an exact match before one that only contains it), then the dialog, panel or section
+    // around it.
+    const CONTAINER = '[role=dialog],[role=alertdialog],dialog,[aria-modal=true],.slds-modal,.slds-panel,.slds-card,[role=region],[role=tabpanel],[role=complementary],[role=group],[role=form],section,article,form,fieldset,aside';
+    const withinText = agent && options && options.within ? String(options.within).trim() : '';
+    let scope = null;
+    if (withinText) {
+      try { scope = __satelliteResolve(withinText, roots.slice(1)); } catch (e) { scope = null; }   // not a selector
+      if (!scope) {
+        const wanted = withinText.replace(/\s+/g, ' ').toLowerCase();
+        let best = null, bestScore = Infinity;
+        for (const root of roots) {
+          for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading],legend,label,header,[title],[aria-label],[class*=title],[class*=header]')) {
+            const own = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (!own || own.length > 300 || !own.includes(wanted)) continue;
+            const score = (own === wanted ? 0 : 1000) + own.length;
+            if (score < bestScore) { best = el; bestScore = score; }
+          }
+        }
+        for (let n = best; n && !scope; n = up(n)) if (n.matches && n.matches(CONTAINER) && n !== document.body) scope = n;
+        if (best && !scope) scope = up(best) || best;
       }
     }
 
@@ -523,13 +573,25 @@ enum PageSnapshot {
       return { html: out.join('\n'), stats };
     }
 
+    if (withinText && !scope) return { path: framePath, url: safeUrl(location.href), title: document.title || '', withinMissing: true };
+
     let html = '', stats = {}, detail = 'full';
-    for (const level of LEVELS) {
-      const result = render(level);
-      html = result.html; stats = result.stats; detail = level.name;
-      if (html.length <= budget) break;
+    // An agent can't act on an outline (no selectors, no values): when the page only fits as one, or `within` picks
+    // a part, the HTML is left out and its room goes to the controls and the text.
+    let htmlLeftOut = !!scope;
+    if (!htmlLeftOut) {
+      for (const level of LEVELS) {
+        const result = render(level);
+        html = result.html; stats = result.stats; detail = level.name;
+        if (html.length <= budget) break;
+      }
+      if (agent && (detail === 'compact' || detail === 'outline')) { html = ''; htmlLeftOut = true; }
+    } else {
+      stats = { elements: 0, shadowRoots: 0, iframes: 0, omitted: 0 };
+      detail = 'within';
     }
     if (html.length > budget) html = html.slice(0, budget) + '\n<!-- truncated: the page is larger than the snapshot limit -->';
+    const spare = htmlLeftOut ? budget : 0;
 
     // Clickable things, with selectors an extension can use.
     const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\w-]/g, '\\$&'));
@@ -562,9 +624,8 @@ enum PageSnapshot {
       return segments.join(' ');
     };
     const INTERACTIVE = 'a[href],button,input,select,textarea,summary,[role=button],[role=tab],[role=menuitem],[role=link],[role=checkbox],[role=switch],[role=combobox],[role=option],[contenteditable=true],[tabindex]:not([tabindex="-1"]),lightning-button,lightning-button-icon,lightning-input,lightning-combobox,lightning-menu-item';
-    const agent = !!(options && options.agent);
-    const interactiveChars = agent ? ((options && options.interactiveChars) || 25000) : Infinity;
-    const textBudget = agent && mode === 'full' ? ((options && options.visibleText) || 0) : 0;
+    const interactiveChars = agent ? ((options && options.interactiveChars) || 25000) + Math.round(spare * 0.6) : Infinity;
+    const textBudget = agent && mode === 'full' ? ((options && options.visibleText) || 0) + Math.round(spare * 0.4) : 0;
 
     // Elements in the order they're shown: each element, then its shadow tree, then its children.
     function* composed(node) {
@@ -575,7 +636,16 @@ enum PageSnapshot {
       }
     }
     const visible = (el) => {
-      try { if (el.checkVisibility) return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }); } catch (e) {}
+      try {
+        if (el.checkVisibility) {
+          if (el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return true;
+          // `display: contents` (common on component hosts) has no box, so checkVisibility says no; what shows is
+          // its children.
+          if (getComputedStyle(el).display !== 'contents') return false;
+          const kids = Array.from(el.children).concat(el.shadowRoot ? Array.from(el.shadowRoot.children) : []);
+          return kids.some(visible);
+        }
+      } catch (e) {}
       return el.getClientRects().length > 0;
     };
     // A composed tree's text (into shadow roots too), for a control whose label is drawn by its component.
@@ -598,6 +668,15 @@ enum PageSnapshot {
     // For an agent: the shortest selector that finds `el`. Within each root it climbs only until what it has is
     // unique there, then goes on from the host after `>>`. (An extension wants the longer, steadier `selectorFor`.)
     const uniqueIn = (root, selector) => { try { return root.querySelectorAll(selector).length === 1; } catch (e) { return false; } };
+    const shadowRoots = roots.slice(1);
+    const counted = new Map();
+    const countEverywhere = (selector) => {
+      if (counted.has(selector)) return counted.get(selector);
+      let n = 0;
+      try { for (const root of roots) { n += root.querySelectorAll(selector).length; if (n > 1) break; } } catch (e) { n = 2; }
+      counted.set(selector, n);
+      return n;
+    };
     const shortSelectorFor = (el) => {
       const parts = [];
       let node = el;
@@ -612,8 +691,10 @@ enum PageSnapshot {
             let part = n.localName;
             const classes = Array.from(n.classList || []).filter((c) => !/\d{3,}/.test(c)).slice(0, 2);
             if (classes.length) part += '.' + classes.map(cssEscape).join('.');
-            const parent = n.parentElement;
-            if (parent) {
+            // A child of the shadow root itself has no parentElement, but its siblings still need telling apart
+            // (without this, a toolbar of lightning-buttons gave every one the first one's selector).
+            const parent = n.parentElement || n.parentNode;
+            if (parent && parent.children) {
               const same = Array.from(parent.children).filter((c) => c.localName === n.localName);
               if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
             }
@@ -626,6 +707,14 @@ enum PageSnapshot {
         const host = root && root.host;
         if (!host) break;
         node = host;
+      }
+      // Leave out the shadow hosts in front while what's left finds only this element anywhere on the page (the
+      // resolver looks in shadow roots when the document has no match): shortest first. Flow Builder nests about
+      // eight hosts deep, which made every selector a few hundred characters long.
+      for (let j = parts.length - 1; j > 0; j--) {
+        if (countEverywhere(parts[j]) !== 1) continue;
+        const shorter = parts.slice(j).join(' >> ');
+        try { if (__satelliteResolve(shorter, shadowRoots) === el) return shorter; } catch (e) {}
       }
       return parts.join(' >> ');
     };
@@ -716,16 +805,81 @@ enum PageSnapshot {
       return item;
     };
     if (agent) {
-      // Visible controls first, in the order they're shown, then hidden ones (other console tabs, closed menus),
-      // until the count or the size budget runs out; then just how many more there were.
-      const shown = [], hiddenOnes = [];
-      for (const el of composed(document)) {
-        if (el.matches(INTERACTIVE)) (visible(el) ? shown : hiddenOnes).push(el);
+      const candidates = [];
+      for (const el of scope ? [scope, ...(scope.shadowRoot ? composed(scope.shadowRoot) : []), ...composed(scope)] : composed(document)) {
+        if (el.matches(INTERACTIVE)) candidates.push(el);
       }
+
+      // A lightning-* wrapper (lightning-button, lightning-combobox, …) and the button or field inside it are one
+      // control: list the inner one, which is what a click or typing reaches, with the wrapper's label and value.
+      const PRIMARY = 'button,input,select,textarea,[role=combobox],[role=button],[role=checkbox],[role=switch],[role=radio]';
+      const firstInner = (wrapper) => {
+        const search = (node) => {
+          for (let child = node.firstElementChild; child; child = child.nextElementSibling) {
+            if (child.matches(PRIMARY)) return child;
+            const found = (child.shadowRoot && search(child.shadowRoot)) || search(child);
+            if (found) return found;
+          }
+          return null;
+        };
+        return (wrapper.shadowRoot && search(wrapper.shadowRoot)) || search(wrapper);
+      };
+      const wrapperOf = new Map();
+      const merged = new Set();
+      for (const el of candidates) {
+        if (!el.localName.startsWith('lightning-')) continue;
+        const inner = firstInner(el);
+        if (!inner || !inner.matches(INTERACTIVE)) continue;
+        merged.add(el);
+        if (!wrapperOf.has(inner)) wrapperOf.set(inner, el);
+      }
+
+      // What the user is working in comes first: an open dialog or modal, then an open panel (Flow Builder's
+      // property editor), then the region around the focused element. Each keeps the order it's shown in.
+      const containerRank = new Map();
+      const consider = (el, rank) => {
+        if (!el || !visible(el)) return;
+        if (!containerRank.has(el) || containerRank.get(el) > rank) containerRank.set(el, rank);
+      };
+      for (const root of roots) {
+        for (const el of root.querySelectorAll('[role=dialog],[role=alertdialog],dialog[open],[aria-modal=true],.slds-modal')) consider(el, 0);
+        for (const el of root.querySelectorAll('.slds-panel,.slds-docked-composer,[class*=property-editor],[class*=propertyEditor]')) consider(el, 1);
+        for (const el of root.querySelectorAll('*')) if (el.localName.includes('property-editor')) consider(el, 1);
+      }
+      let active = document.activeElement;
+      while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+      if (active && active !== document.body && active !== document.documentElement) {
+        for (let n = active; n; n = up(n)) if (n.matches && n.matches(CONTAINER) && n !== document.body) { consider(n, 2); break; }
+      }
+      const rankOf = (el) => {
+        let best = 3;
+        for (let n = el; n; n = up(n)) if (containerRank.has(n)) best = Math.min(best, containerRank.get(n));
+        return best;
+      };
+
+      // Visible controls first (by rank), then hidden ones (other console tabs, closed menus), until the count or
+      // the size budget runs out; then just how many more there were.
+      const shown = [], hiddenOnes = [];
+      for (const el of candidates) {
+        if (merged.has(el)) continue;
+        if (visible(el)) shown.push({ el, rank: rankOf(el) }); else hiddenOnes.push(el);
+      }
+      shown.sort((a, b) => a.rank - b.rank);   // stable: each rank keeps the order it's shown in
       let size = 0;
-      for (const [el, hidden] of shown.map((el) => [el, false]).concat(hiddenOnes.map((el) => [el, true]))) {
+      for (const [el, hidden] of shown.map((s) => [s.el, false]).concat(hiddenOnes.map((el) => [el, true]))) {
         if (interactive.length >= interactiveLimit || size >= interactiveChars) { interactiveOmitted++; continue; }
         const item = describe(el, hidden);
+        const wrapper = wrapperOf.get(el);
+        if (wrapper) {
+          const label = wrapper.getAttribute('aria-label') || wrapper.getAttribute('label') || wrapper.getAttribute('title') || '';
+          if (label && mode !== 'none') item.text = trunc(label.replace(/\s+/g, ' ').trim(), 60);
+          const state = controlState(wrapper);
+          if (state.value !== undefined) item.value = trunc(state.value, 200);
+          if (state.options) {
+            const listed = state.options.filter(Boolean).slice(0, 30).map((o) => trunc(o, 40));
+            item.options = listed.join(' | ') + (state.options.length > 30 ? ' | …' + (state.options.length - 30) + ' more' : '');
+          }
+        }
         size += item.selector.length + item.text.length + (item.href || '').length + (item.value || '').length + (item.options || '').length + 16;
         interactive.push(item);
       }
@@ -756,7 +910,28 @@ enum PageSnapshot {
         if (t && t !== lines[lines.length - 1]) { lines.push(t); size += t.length + 1; }
       };
       const isRow = (el) => el.localName === 'tr' || el.getAttribute('role') === 'row';
-      const cellsOf = (row) => Array.from(row.children).filter((c) => /^(td|th)$/.test(c.localName) || /^(cell|gridcell|columnheader|rowheader)$/.test(c.getAttribute('role') || ''));
+      const cellsOf = (row) => Array.from(row.children).concat(row.shadowRoot ? Array.from(row.shadowRoot.children) : [])
+        .filter((c) => /^(td|th)$/.test(c.localName) || /^(cell|gridcell|columnheader|rowheader)$/.test(c.getAttribute('role') || ''));
+      // A cell's text with the values of the fields in it, as the page shows them.
+      const cellText = (cell) => {
+        let out = '';
+        const walkCell = (node) => {
+          for (let child = node.firstChild; child && out.length < 300; child = child.nextSibling) {
+            if (child.nodeType === 3) { out += child.nodeValue + ' '; continue; }
+            if (child.nodeType !== 1 || /^(script|style|template)$/.test(child.localName)) continue;
+            if (/^(select|input|textarea)$/.test(child.localName)) {
+              const value = controlState(child).value;
+              if (value) out += '[' + trunc(value.replace(/\s+/g, ' ').trim(), 200) + '] ';
+              continue;
+            }
+            if (child.shadowRoot) walkCell(child.shadowRoot);
+            walkCell(child);
+          }
+        };
+        if (cell.shadowRoot) walkCell(cell.shadowRoot);
+        walkCell(cell);
+        return out.replace(/\s+/g, ' ').trim();
+      };
       const walk = (node) => {
         for (let child = node.firstChild; child && size < textBudget; child = child.nextSibling) {
           if (child.nodeType === 3) { line += child.nodeValue + ' '; continue; }
@@ -767,9 +942,12 @@ enum PageSnapshot {
             continue;
           }
           if (child.nodeType !== 1 || SKIP.has(child.localName) || !visible(child)) continue;
-          if (isRow(child)) {
+          // A row made of cells is one line. A "row" of components with no cells (Flow Builder's filter
+          // conditions) is read like any other block: skipping it lost every condition.
+          const cells = isRow(child) ? cellsOf(child) : [];
+          if (cells.length) {
             flush();
-            line = cellsOf(child).map((cell) => composedText(cell).replace(/\s+/g, ' ').trim()).filter(Boolean).join(' | ');
+            line = cells.map(cellText).filter(Boolean).join(' | ');
             flush();
             continue;
           }
@@ -780,7 +958,10 @@ enum PageSnapshot {
           if (block) flush();
         }
       };
-      if (document.body) walk(document.body);
+      if (scope) {
+        if (scope.shadowRoot) walk(scope.shadowRoot);
+        walk(scope);
+      } else if (document.body) walk(document.body);
       flush();
       visibleText = lines.join('\n');
       if (visibleText.length > textBudget) visibleText = visibleText.slice(0, textBudget) + '\n…(the rest of the page’s text didn’t fit)';
@@ -829,7 +1010,7 @@ enum PageSnapshot {
       title: document.title || '',
       language: document.documentElement.lang || '',
       viewport: window.innerWidth + '×' + window.innerHeight,
-      html, detail, stats, interactive, interactiveOmitted, visibleText, globals, hints, scripts, styles, meta,
+      html, detail, stats, interactive, interactiveOmitted, visibleText, htmlLeftOut, globals, hints, scripts, styles, meta,
     };
     """#
 }

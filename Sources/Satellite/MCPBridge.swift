@@ -129,7 +129,8 @@ final class MCPBridge {
                 guard let page, page.isLoaded else {
                     return ["ok": false, "error": "That page hasn\u{2019}t loaded yet, so there\u{2019}s nothing to read. Open it in Satellite, or wait for it to load."]
                 }
-                let text = try await Self.snapshot(page.pane)
+                let within = (request["within"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = try await Self.snapshot(page.pane, within: within?.isEmpty == false ? within : nil)
                 return ["ok": true, "text": Self.fitted(text, note: "The rest of this page didn\u{2019}t fit.")]
             case "readGroup":
                 guard let name = request["group"] as? String, !name.isEmpty else {
@@ -213,24 +214,27 @@ final class MCPBridge {
         }
     }
 
-    /// Claude Code keeps at most 25,000 tokens of a tool's answer by default (about 100,000 characters) and cuts the
-    /// rest unseen. Answers stay under that, so what an agent gets is all there is, or says where it was cut.
-    static let outputLimit = 90_000
+    /// Claude Code shows a large answer only as a 2 KB preview and saves the rest to a file the agent must open
+    /// (answers of 53\u{2013}55 KB were, in November 2026; the threshold isn't documented). Answers stay well under
+    /// that, so what an agent gets is all there is, or says where it was cut.
+    static let outputLimit = 40_000
 
     /// A page as `read_page` gives it, sized so `sharedBy` of them fit in one answer: big pages come in less
     /// detail rather than being cut off partway.
-    private static func snapshot(_ pane: WebPane, sharedBy count: Int = 1) async throws -> String {
+    private static func snapshot(_ pane: WebPane, sharedBy count: Int = 1, within: String? = nil) async throws -> String {
         var options = PageSnapshot.Options(forAssistant: true)
         options.text = SnapshotTextMode.forAgents
         options.textSetting = "Page text for agents"
-        // The answer's room, about 90,000 characters, goes to what an agent uses most: the controls it can act on,
-        // and the page's text; the HTML gets what's left.
+        // The answer's room (`outputLimit`) goes to what an agent uses most: the controls it can act on, and the
+        // page's text. A small page's HTML comes too; a large one's is left out (only an outline would fit, with
+        // nothing to act on) and its room goes to the controls and the text.
         options.forAgent = true
-        options.interactiveLimit = max(25, 300 / count)
-        options.interactiveChars = max(4_000, 25_000 / count)
-        options.visibleText = max(5_000, 30_000 / count)
-        options.mainBudget = max(5_000, 25_000 / count)
-        options.frameBudget = max(2_000, 8_000 / count)   // each frame's HTML, and its controls and text
+        options.within = within
+        options.interactiveLimit = max(25, 250 / count)
+        options.interactiveChars = max(3_000, 14_000 / count)
+        options.visibleText = max(3_000, 10_000 / count)
+        options.mainBudget = max(3_000, 10_000 / count)
+        options.frameBudget = max(1_500, 4_000 / count)   // each frame's HTML, and its controls and text
         return try await PageSnapshot.capture(pane.webView, options: options)
     }
 
