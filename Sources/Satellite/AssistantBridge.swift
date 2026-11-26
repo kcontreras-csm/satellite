@@ -233,6 +233,12 @@ final class AssistantTrust: ObservableObject {
 
     func isTrusted(_ id: String) -> Bool { trusted.contains(id) }
 
+    /// What `isTrusted` answers for an approval kept with "Don't ask again", read straight from defaults so it
+    /// works off the main thread (`MCPBridge` takes screenshots there while a menu is open).
+    nonisolated static func isRemembered(_ id: String, defaults: UserDefaults = .standard) -> Bool {
+        (defaults.stringArray(forKey: key) ?? []).contains(id)
+    }
+
     func set(_ id: String, trusted value: Bool) {
         if value { trusted.insert(id) } else { trusted.remove(id) }
         defaults.set(trusted.sorted(), forKey: Self.key)

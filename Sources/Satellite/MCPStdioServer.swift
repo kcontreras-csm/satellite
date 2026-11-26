@@ -71,6 +71,11 @@ enum MCPStdioServer {
             "inputSchema": ["type": "object", "required": ["group"],
                              "properties": ["group": ["type": "string", "description": "The group\u{2019}s name, as in list_open_pages and Satellite\u{2019}s Groups view."]]],
         ],
+        [
+            "name": "take_screenshot",
+            "description": "Takes a screenshot of Satellite (not this terminal) as it looks now: its whole window, plus any open dialog, sheet, alert, popover or menu, including a page\u{2019}s dropdowns and right-click menus, which are drawn as native menus and so are missing from read_active_page. Other apps\u{2019} windows are left out. Returns the image and a line saying what\u{2019}s open. Use it to see layout, a menu or dialog the user has open, or something drawn rather than written; use read_active_page for text and selectors. Satellite asks the user once per agent before the first one, separately from reading pages.",
+            "inputSchema": ["type": "object", "properties": [String: Any]()],
+        ],
     ]
 
     static func run() -> Never {
@@ -95,7 +100,13 @@ enum MCPStdioServer {
                 let params = message["params"] as? [String: Any] ?? [:]
                 let arguments = params["arguments"] as? [String: Any] ?? [:]
                 switch callBridge(tool: params["name"] as? String ?? "", arguments: arguments) {
-                case .success(let text): respond(id, ["content": [["type": "text", "text": text]], "isError": false])
+                case .success(let response):
+                    var content: [[String: Any]] = []
+                    if let image = response["image"] as? String, let mimeType = response["mimeType"] as? String {
+                        content.append(["type": "image", "data": image, "mimeType": mimeType])
+                    }
+                    content.append(["type": "text", "text": response["text"] as? String ?? ""])
+                    respond(id, ["content": content, "isError": false])
                 case .failure(let failure): respond(id, ["content": [["type": "text", "text": failure.message]], "isError": true])
                 }
             default:
@@ -120,7 +131,8 @@ enum MCPStdioServer {
 
     private struct BridgeFailure: Error { let message: String }
 
-    private static func callBridge(tool: String, arguments: [String: Any]) -> Result<String, BridgeFailure> {
+    /// The app's answer: its `text`, and for a screenshot an `image` (base64) with its `mimeType`.
+    private static func callBridge(tool: String, arguments: [String: Any]) -> Result<[String: Any], BridgeFailure> {
         var request = arguments
         switch tool {
         case "list_open_pages": request["action"] = "list"
@@ -133,6 +145,7 @@ enum MCPStdioServer {
         case "click_element": request["action"] = "click"
         case "type_text": request["action"] = "type"
         case "read_tab_group": request["action"] = "readGroup"
+        case "take_screenshot": request["action"] = "screenshot"
         default: return .failure(BridgeFailure(message: "Unknown tool \u{201C}\(tool)\u{201D}."))
         }
         request["paneId"] = ProcessInfo.processInfo.environment["SATELLITE_MCP_PANE_ID"] ?? ""
@@ -154,7 +167,7 @@ enum MCPStdioServer {
         guard let response = MCPSocket.receiveLine(from: fd, limit: MCPSocket.responseLimit) else {
             return .failure(BridgeFailure(message: "Satellite closed the connection without answering."))
         }
-        if response["ok"] as? Bool == true, let text = response["text"] as? String { return .success(text) }
+        if response["ok"] as? Bool == true, response["text"] is String { return .success(response) }
         return .failure(BridgeFailure(message: response["error"] as? String ?? "Satellite declined the request."))
     }
 }

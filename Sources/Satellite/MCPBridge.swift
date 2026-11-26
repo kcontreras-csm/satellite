@@ -86,12 +86,34 @@ final class MCPBridge {
             guard client >= 0 else { return }   // the listening socket was closed in stop()
             MCPSocket.ignoreBrokenPipe(client)
             guard let request = MCPSocket.receiveLine(from: client, limit: MCPSocket.requestLimit) else { close(client); continue }
+            // A screenshot an agent is already allowed to take doesn't wait for the main thread, which an open menu
+            // holds: that menu is often the thing to see. Anything else, the first ask included, goes the usual way.
+            if Self.screenshotAllowedOffMain(request) {
+                Task.detached {
+                    let response: [String: Any]
+                    do {
+                        let shot = try await AppScreenshot.capture()
+                        response = ["ok": true, "text": shot.caption, "image": shot.data.base64EncodedString(), "mimeType": shot.mimeType]
+                    } catch {
+                        response = ["ok": false, "error": error.localizedDescription]
+                    }
+                    MCPSocket.sendLine(response, to: client)
+                    close(client)
+                }
+                continue
+            }
             Task { @MainActor [self] in
                 let response = await self.handle(request)
                 MCPSocket.sendLine(response, to: client)
                 close(client)
             }
         }
+    }
+
+    private nonisolated static func screenshotAllowedOffMain(_ request: [String: Any]) -> Bool {
+        guard request["action"] as? String == "screenshot", MCPDefaults.currentMode != .off,
+              let paneID = request["paneId"] as? String, !paneID.isEmpty else { return false }
+        return AssistantTrust.isRemembered("\(Kind.screenshot.trustPrefix):\(paneID)")
     }
 
     private func handle(_ request: [String: Any]) async -> [String: Any] {
@@ -101,7 +123,7 @@ final class MCPBridge {
         let action = request["action"] as? String ?? "read"
         let paneID = request["paneId"] as? String ?? ""
         let label = AppsModel.shared.config.assistants.first(where: { $0.id == paneID })?.name ?? "A command-line agent"
-        let kind: Kind = ["click", "type"].contains(action) ? .write : .read
+        let kind: Kind = ["click", "type"].contains(action) ? .write : action == "screenshot" ? .screenshot : .read
         switch MCPDefaults.currentMode {
         case .off: return ["ok": false, "error": "Satellite\u{2019}s MCP server is turned off by your administrator."]
         case .read where kind == .write: return ["ok": false, "error": "Writing to pages is turned off by your administrator; reading is still allowed."]
@@ -117,6 +139,9 @@ final class MCPBridge {
             switch action {
             case "list":
                 return ["ok": true, "text": Self.listing(controller.openPages(), groups: controller.satelliteGroups, front: controller.currentWebsitePane)]
+            case "screenshot":
+                let shot = try await AppScreenshot.capture()
+                return ["ok": true, "text": shot.caption, "image": shot.data.base64EncodedString(), "mimeType": shot.mimeType]
             case "read":
                 let page: OpenPage?
                 if let tab = request["tab"] as? String, !tab.isEmpty {
@@ -301,12 +326,21 @@ final class MCPBridge {
     }
 
     enum Kind {
-        case read, write
+        case read, write, screenshot
         // The read key changes whenever what reading shares grows (from the page in front to every open page, then
         // from interface labels to all page text by default), so an approval given for less isn't silently
-        // stretched to cover more: the agent is asked once again, under the new wording.
-        var trustPrefix: String { switch self { case .read: return "mcp-read-text"; case .write: return "mcp-write" } }
-        var declinedVerb: String { switch self { case .read: return "read pages open in Satellite"; case .write: return "click and type on the page in front" } }
+        // stretched to cover more: the agent is asked once again, under the new wording. A screenshot shows more
+        // than reading (terminals, settings, every dialog, whatever the page-text setting), so it's asked apart.
+        var trustPrefix: String {
+            switch self { case .read: return "mcp-read-text"; case .write: return "mcp-write"; case .screenshot: return "mcp-screenshot" }
+        }
+        var declinedVerb: String {
+            switch self {
+            case .read: return "read pages open in Satellite"
+            case .write: return "click and type on the page in front"
+            case .screenshot: return "take screenshots of Satellite"
+            }
+        }
     }
 
     static func askWithAlert(_ kind: Kind, label: String, window: NSWindow?) async -> AssistantSender.Answer {
@@ -315,6 +349,9 @@ final class MCPBridge {
         case .read:
             alert.messageText = "Let \(label) read the pages open in Satellite?"
             alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to read pages open in Satellite \u{2014} any tab of any app, of any loaded tab group, and the web assistants, not only the one in front: their URLs, titles and visible content. Pages can hold customer data, so only allow agents approved for it.\n\nPage text: \(SnapshotTextMode.forAgents.summary) (change this in Settings > General > Page text for agents)."
+        case .screenshot:
+            alert.messageText = "Let \(label) take screenshots of Satellite?"
+            alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to take screenshots of Satellite\u{2019}s windows as they look at that moment: the page shown, the sidebar, any open dialog, menu or popover, and Terminal panes and Settings if they\u{2019}re showing. Everything visible is in the picture, whatever Settings > General > Page text for agents says, and pages can hold customer data, so only allow agents approved for it. Other apps\u{2019} windows are never included."
         case .write:
             alert.messageText = "Let \(label) click and type on the page in front?"
             alert.informativeText = "\(label) is a command-line agent asking, through Satellite\u{2019}s local MCP server, to click and type on whichever page is in front in Satellite \u{2014} which can submit forms and change data, including in Salesforce. Allowed, it can act anywhere on that page; with \u{201C}Don\u{2019}t ask again\u{201D}, on whatever page is in front from now on, in any app, without asking. Only allow agents you trust with that."
